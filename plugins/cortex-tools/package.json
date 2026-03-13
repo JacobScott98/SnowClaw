@@ -1,0 +1,10 @@
+{
+  "name": "@snowclaw/cortex-tools",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin: Cortex SQL queries, Cortex functions, and Snowflake table access",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "snowflake-sdk": "^1.11.0"
+  }
+}

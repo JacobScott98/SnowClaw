@@ -1,0 +1,8 @@
+default_connection_name = "main"
+
+[main]
+account = ""
+user = ""
+password = ""
+warehouse = ""
+role = ""

@@ -1,0 +1,43 @@
+{
+  "models": {
+    "providers": {
+      "cortex": {
+        "baseUrl": "https://$SNOWFLAKE_ACCOUNT.snowflakecomputing.com/api/v2/cortex/chat/completions",
+        "apiKey": "$SNOWFLAKE_TOKEN",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "snowflake-arctic",
+            "name": "Snowflake Arctic",
+            "contextWindow": 4096,
+            "maxTokens": 4096
+          }
+        ]
+      }
+    }
+  },
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "mode": "socket",
+      "accounts": {
+        "default": {
+          "botToken": "$SLACK_BOT_TOKEN",
+          "appToken": "$SLACK_APP_TOKEN"
+        }
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "session": {
+        "maintenance": {
+          "maxDiskBytes": "500mb",
+          "pruneAfter": "30d",
+          "rotateBytes": "10mb",
+          "maxEntries": 500
+        }
+      }
+    }
+  }
+}
