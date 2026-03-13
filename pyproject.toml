@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "snowclaw"
+version = "0.1.0"
+description = "Bootstrapper for running OpenClaw on Snowflake Container Services"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "rich>=13.0",
+    "InquirerPy>=0.3.4",
+    "requests>=2.28",
+]
+
+[project.scripts]
+snowclaw = "snowclaw:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-includes = ["snowclaw.py"]

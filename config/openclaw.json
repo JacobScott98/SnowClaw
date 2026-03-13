@@ -29,15 +29,6 @@
     }
   },
   "agents": {
-    "defaults": {
-      "session": {
-        "maintenance": {
-          "maxDiskBytes": "500mb",
-          "pruneAfter": "30d",
-          "rotateBytes": "10mb",
-          "maxEntries": 500
-        }
-      }
-    }
+    "defaults": {}
   }
 }
