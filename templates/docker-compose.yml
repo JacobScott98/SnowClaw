@@ -1,8 +1,7 @@
 services:
   openclaw:
     build: .
-    ports:
-      - "18789:18789"
+    network_mode: host
     env_file: .env
     volumes:
       - openclaw-data:/home/node/.openclaw

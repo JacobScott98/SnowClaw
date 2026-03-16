@@ -158,6 +158,11 @@ def write_dotenv(root: Path, settings: dict):
 def write_openclaw_config(root: Path, settings: dict):
     """Write config/openclaw.json with provider and channel config."""
     config: dict = {
+        "gateway": {
+            "auth": {
+                "mode": "none",
+            },
+        },
         "models": {"providers": {}},
         "channels": {},
         "agents": {"defaults": {}},
@@ -165,15 +170,15 @@ def write_openclaw_config(root: Path, settings: dict):
 
     # Cortex provider (always included)
     config["models"]["providers"]["cortex"] = {
-        "baseUrl": f"https://$SNOWFLAKE_ACCOUNT.snowflakecomputing.com/api/v2/cortex/chat/completions",
-        "apiKey": "$SNOWFLAKE_TOKEN",
+        "baseUrl": f"https://{settings['account']}.snowflakecomputing.com/api/v2/cortex/v1",
+        "apiKey": "${SNOWFLAKE_TOKEN}",
         "api": "openai-completions",
         "models": [
             {
-                "id": "snowflake-arctic",
-                "name": "Snowflake Arctic",
-                "contextWindow": 4096,
-                "maxTokens": 4096,
+                "id": "claude-opus-4-6",
+                "name": "Claude Opus 4.6",
+                "contextWindow": 200000,
+                "maxTokens": 128000,
             }
         ],
     }
@@ -182,7 +187,7 @@ def write_openclaw_config(root: Path, settings: dict):
     if settings.get("enable_openrouter"):
         config["models"]["providers"]["openrouter"] = {
             "baseUrl": "https://openrouter.ai/api/v1",
-            "apiKey": "$OPENROUTER_API_KEY",
+            "apiKey": "${OPENROUTER_API_KEY}",
             "api": "openai-completions",
             "models": [],
         }
@@ -194,8 +199,8 @@ def write_openclaw_config(root: Path, settings: dict):
             "mode": "socket",
             "accounts": {
                 "default": {
-                    "botToken": "$SLACK_BOT_TOKEN",
-                    "appToken": "$SLACK_APP_TOKEN",
+                    "botToken": "${SLACK_BOT_TOKEN}",
+                    "appToken": "${SLACK_APP_TOKEN}",
                 }
             },
         }
