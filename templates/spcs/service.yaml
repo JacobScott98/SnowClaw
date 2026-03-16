@@ -2,23 +2,19 @@ spec:
   containers:
     - name: openclaw
       image: /snowclaw_db/snowclaw_schema/snowclaw_repo/snowclaw:latest
-      env:
-        OPENROUTER_API_KEY:
-          type: secret
-          name: snowclaw_secrets
-          key: openrouter_api_key
-        SNOWFLAKE_TOKEN:
-          type: secret
-          name: snowclaw_secrets
-          key: snowflake_token
-        SLACK_BOT_TOKEN:
-          type: secret
-          name: snowclaw_secrets
-          key: slack_bot_token
-        SLACK_APP_TOKEN:
-          type: secret
-          name: snowclaw_secrets
-          key: slack_app_token
+      secrets:
+        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_openrouter_key
+          secretKeyRef: secret_string
+          envVarName: OPENROUTER_API_KEY
+        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_sf_token
+          secretKeyRef: secret_string
+          envVarName: SNOWFLAKE_TOKEN
+        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_slack_bot_token
+          secretKeyRef: secret_string
+          envVarName: SLACK_BOT_TOKEN
+        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_slack_app_token
+          secretKeyRef: secret_string
+          envVarName: SLACK_APP_TOKEN
       resources:
         requests:
           cpu: 1

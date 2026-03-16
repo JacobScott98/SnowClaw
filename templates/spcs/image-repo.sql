@@ -15,15 +15,22 @@ CREATE STAGE IF NOT EXISTS snowclaw_state_stage
   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
   DIRECTORY = (ENABLE = TRUE);
 
--- Secret for environment variables
-CREATE SECRET IF NOT EXISTS snowclaw_secrets
+-- Secrets for environment variables (one per env var, GENERIC_STRING type)
+CREATE SECRET IF NOT EXISTS snowclaw_sf_token
   TYPE = GENERIC_STRING
-  SECRET_STRING = '{
-    "openrouter_api_key": "",
-    "snowflake_token": "",
-    "slack_bot_token": "",
-    "slack_app_token": ""
-  }';
+  SECRET_STRING = '';
+
+CREATE SECRET IF NOT EXISTS snowclaw_openrouter_key
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '';
+
+CREATE SECRET IF NOT EXISTS snowclaw_slack_bot_token
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '';
+
+CREATE SECRET IF NOT EXISTS snowclaw_slack_app_token
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '';
 
 -- Network rule (references network-rules.yaml values)
 CREATE OR REPLACE NETWORK RULE snowclaw_egress_rule
