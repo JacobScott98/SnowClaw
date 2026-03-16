@@ -4,6 +4,7 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 # Stage config and plugins into a defaults directory so the entrypoint can
 # sync them into the volume-mounted OPENCLAW_HOME at runtime.
 COPY --chown=1000:1000 config/openclaw.json /opt/snowclaw/defaults/openclaw.json
+COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 
 # Copy Snowflake connection config
 COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections.toml

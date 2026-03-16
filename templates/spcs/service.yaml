@@ -1,18 +1,18 @@
 spec:
   containers:
     - name: openclaw
-      image: /snowclaw_db/snowclaw_schema/snowclaw_repo/snowclaw:latest
+      image: /__SNOWCLAW_PREFIX___db/__SNOWCLAW_PREFIX___schema/__SNOWCLAW_PREFIX___repo/snowclaw:latest
       secrets:
-        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_openrouter_key
+        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___openrouter_key
           secretKeyRef: secret_string
           envVarName: OPENROUTER_API_KEY
-        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_sf_token
+        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
           envVarName: SNOWFLAKE_TOKEN
-        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_slack_bot_token
+        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___slack_bot_token
           secretKeyRef: secret_string
           envVarName: SLACK_BOT_TOKEN
-        - snowflakeSecret: snowclaw_db.snowclaw_schema.snowclaw_slack_app_token
+        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___slack_app_token
           secretKeyRef: secret_string
           envVarName: SLACK_APP_TOKEN
       resources:
@@ -31,6 +31,6 @@ spec:
       public: true
   volumes:
     - name: openclaw-state
-      source: "@snowclaw_state_stage"
+      source: "@__SNOWCLAW_PREFIX___state_stage"
       uid: 1000
       gid: 1000
