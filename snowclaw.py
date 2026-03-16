@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -26,15 +28,59 @@ console = Console()
 # Utilities
 # ---------------------------------------------------------------------------
 
+def get_templates_dir() -> Path:
+    """Return the path to the templates/ directory bundled with the CLI."""
+    return Path(__file__).resolve().parent / "templates"
+
+
 def find_project_root() -> Path:
-    """Walk up from cwd to find the SnowClaw project root (contains Dockerfile + config/)."""
+    """Walk up from cwd to find the SnowClaw project root (contains .snowclaw marker)."""
     cur = Path.cwd()
     for d in [cur, *cur.parents]:
-        if (d / "Dockerfile").exists() and (d / "config").is_dir():
+        if (d / ".snowclaw").exists():
             return d
-    console.print("[red]Could not find SnowClaw project root (no Dockerfile + config/ found).[/red]")
-    console.print("Run this command from inside the snowclaw repo.")
+    console.print("[red]Could not find SnowClaw project root (no .snowclaw marker found).[/red]")
+    console.print("Run [cyan]snowclaw setup[/cyan] in a fresh directory to create a project.")
     sys.exit(1)
+
+
+def scaffold_project(target: Path, force: bool = False) -> tuple[list[str], list[str]]:
+    """Copy template files into target directory. Returns (copied, skipped) file lists."""
+    templates = get_templates_dir()
+    if not templates.is_dir():
+        console.print(f"[red]Templates directory not found at {templates}[/red]")
+        sys.exit(1)
+
+    copied: list[str] = []
+    skipped: list[str] = []
+
+    for src in sorted(templates.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(templates)
+        dest = target / rel
+        if dest.exists() and not force:
+            skipped.append(str(rel))
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        copied.append(str(rel))
+
+    # Set executable bit on shell scripts
+    for sh in target.rglob("*.sh"):
+        sh.chmod(sh.stat().st_mode | 0o111)
+
+    # Create config/ directory for generated files
+    (target / "config").mkdir(exist_ok=True)
+
+    # Write .snowclaw marker
+    marker = {
+        "version": __version__,
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+    (target / ".snowclaw").write_text(json.dumps(marker, indent=2) + "\n")
+
+    return copied, skipped
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -258,7 +304,41 @@ def run_snowflake_setup(settings: dict):
 def cmd_setup(args: argparse.Namespace):
     """Interactive first-time setup wizard."""
     render_banner()
-    root = find_project_root()
+    cwd = Path.cwd()
+    force = getattr(args, "force", False)
+
+    # Refuse to scaffold inside the CLI repo itself
+    cli_repo = get_templates_dir().parent
+    if cwd.resolve() == cli_repo.resolve():
+        console.print("[red]Cannot run setup inside the snowclaw CLI repo.[/red]")
+        console.print("Create a new directory and run [cyan]snowclaw setup[/cyan] there:")
+        console.print("  [dim]mkdir my-openclaw && cd my-openclaw && snowclaw setup[/dim]")
+        sys.exit(1)
+
+    # Scaffold project files if not already set up
+    if (cwd / ".snowclaw").exists():
+        console.print("[dim]Project already scaffolded, re-running config generation...[/dim]")
+        root = cwd
+    else:
+        # Warn if directory is non-empty (ignoring .git)
+        contents = [p for p in cwd.iterdir() if p.name != ".git"]
+        if contents and not force:
+            proceed = inquirer.confirm(
+                message=f"Directory is not empty ({len(contents)} items). Scaffold here anyway?",
+                default=False,
+            ).execute()
+            if not proceed:
+                console.print("[dim]Aborted.[/dim]")
+                return
+
+        console.print("[bold]Scaffolding project files...[/bold]")
+        copied, skipped = scaffold_project(cwd, force=force)
+        for f in copied:
+            console.print(f"  [green]✓[/green] {f}")
+        for f in skipped:
+            console.print(f"  [dim]  skipped {f} (already exists)[/dim]")
+        console.print()
+        root = cwd
 
     # --- Collect inputs ---
     account = inquirer.text(
@@ -425,7 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"snowclaw {__version__}")
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("setup", help="Interactive first-time setup wizard")
+    setup_parser = sub.add_parser("setup", help="Interactive first-time setup wizard")
+    setup_parser.add_argument("--force", action="store_true", help="Overwrite existing template files")
     sub.add_parser("deploy", help="Build, push, and deploy to SPCS")
     sub.add_parser("update", help="Update the OpenClaw version")
 

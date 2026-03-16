@@ -59,7 +59,7 @@ if command -v snowclaw &>/dev/null; then
     info "Installed snowclaw $(snowclaw --version 2>/dev/null || echo '(version unknown)')"
     echo ""
     echo "Get started:"
-    echo "  cd $INSTALL_DIR"
+    echo "  mkdir my-openclaw && cd my-openclaw"
     echo "  snowclaw setup"
 else
     err "Installation failed — snowclaw not found on PATH. Try restarting your shell."

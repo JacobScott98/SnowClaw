@@ -1,0 +1,4 @@
+.env
+config/connections.toml
+node_modules/
+*.log

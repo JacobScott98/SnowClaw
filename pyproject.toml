@@ -19,4 +19,4 @@ snowclaw = "snowclaw:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-only-includes = ["snowclaw.py"]
+only-includes = ["snowclaw.py", "templates/"]
