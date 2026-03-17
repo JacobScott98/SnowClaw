@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -21,13 +22,12 @@ console = Console()
 # Snowflake naming
 # ---------------------------------------------------------------------------
 
-def sf_names(prefix: str) -> dict:
-    """Derive all Snowflake object names from a prefix."""
-    db = f"{prefix}_db"
-    schema = f"{prefix}_schema"
+def sf_names(database: str, schema: str) -> dict:
+    """Derive all Snowflake object names from a database and schema."""
+    prefix = re.sub(r"_db$", "", database.lower())
     return {
-        "db": db,
-        "schema": f"{db}.{schema}",
+        "db": database,
+        "schema": f"{database}.{schema}",
         "schema_name": schema,
         "repo": f"{prefix}_repo",
         "stage": f"{prefix}_state_stage",
@@ -145,6 +145,43 @@ def snowflake_rest_execute(
             response=resp,
         )
     return resp.json()
+
+
+def load_snowflake_context(root: Path) -> dict:
+    """Load Snowflake connection context from marker + .env + connections.toml.
+
+    Returns dict with: account, token, user, registry_account, database, schema,
+    warehouse, names (from sf_names), and the raw env/conn dicts.
+    """
+    import os as _os
+
+    marker = read_marker(root)
+    env = {**_os.environ, **load_dotenv(root / ".env")}
+    conn = load_connections_toml(root / "connections.toml")
+
+    database = marker.get("database", env.get("SNOWCLAW_DB", "snowclaw_db"))
+    schema = marker.get("schema", env.get("SNOWCLAW_SCHEMA", "snowclaw_schema"))
+    names = sf_names(database, schema)
+
+    account = env.get("SNOWFLAKE_ACCOUNT")
+    token = env.get("SNOWFLAKE_TOKEN")
+    registry_account = env.get("SNOWFLAKE_REGISTRY_ACCOUNT")
+    sf_user = env.get("SNOWFLAKE_USER")
+    warehouse = env.get("SNOWFLAKE_WAREHOUSE") or conn.get("warehouse")
+
+    return {
+        "account": account,
+        "token": token,
+        "user": sf_user,
+        "registry_account": registry_account,
+        "database": database,
+        "schema": schema,
+        "warehouse": warehouse,
+        "names": names,
+        "env": env,
+        "conn": conn,
+        "marker": marker,
+    }
 
 
 def render_banner():

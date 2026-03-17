@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from snowclaw import __version__
-from snowclaw.commands import cmd_build, cmd_deploy, cmd_dev, cmd_setup, cmd_update
+from snowclaw.commands import cmd_build, cmd_deploy, cmd_dev, cmd_pull, cmd_push, cmd_setup, cmd_update
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +24,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("deploy", help="Build, push, and deploy to SPCS")
     sub.add_parser("update", help="Update the OpenClaw version")
 
+    pull_parser = sub.add_parser("pull", help="Pull skills and workspace from SPCS stage")
+    pull_group = pull_parser.add_mutually_exclusive_group()
+    pull_group.add_argument("--workspace-only", action="store_true", help="Only pull workspace/")
+    pull_group.add_argument("--skills-only", action="store_true", help="Only pull skills/")
+
+    push_parser = sub.add_parser("push", help="Push skills and workspace to SPCS stage")
+    push_group = push_parser.add_mutually_exclusive_group()
+    push_group.add_argument("--workspace-only", action="store_true", help="Only push workspace/")
+    push_group.add_argument("--skills-only", action="store_true", help="Only push skills/")
+
     return parser
 
 
@@ -37,6 +47,8 @@ def main():
         "build": cmd_build,
         "deploy": cmd_deploy,
         "update": cmd_update,
+        "pull": cmd_pull,
+        "push": cmd_push,
     }
 
     handler = commands.get(args.command or "setup")

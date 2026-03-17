@@ -7,10 +7,16 @@ DEFAULTS="/opt/snowclaw/defaults"
 # Ensure the volume-mounted home dir exists and is writable
 mkdir -p "$OPENCLAW_HOME"
 
-# Always sync the latest config into the (possibly volume-mounted) home dir
+# Always overwrite openclaw.json (config changes must propagate on redeploy)
 cp -f "$DEFAULTS/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
-cp -rf "$DEFAULTS/skills/" "$OPENCLAW_HOME/skills/"
-cp -rf "$DEFAULTS/workspace/" "$OPENCLAW_HOME/workspace/"
+
+# Skills: only seed on first run (when dir doesn't exist)
+if [ ! -d "$OPENCLAW_HOME/skills" ]; then
+    cp -rf "$DEFAULTS/skills/" "$OPENCLAW_HOME/skills/"
+fi
+
+# Workspace: never copy defaults — agent creates files, user manages via pull/push
+mkdir -p "$OPENCLAW_HOME/workspace"
 
 # Auto-approve device pairing requests in the background.
 # SPCS handles auth at the ingress layer, so gateway-level pairing is redundant.

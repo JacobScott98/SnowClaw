@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
 import sys
@@ -22,11 +21,9 @@ from snowclaw.utils import (
     console,
     find_project_root,
     get_templates_dir,
-    load_connections_toml,
-    load_dotenv,
+    load_snowflake_context,
     read_marker,
     render_banner,
-    sf_names,
     snowflake_rest_execute,
     write_marker,
 )
@@ -117,11 +114,17 @@ def cmd_setup(args: argparse.Namespace):
 
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
     role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
-    prefix = inquirer.text(
-        message="Snowflake object name prefix:",
-        default="snowclaw",
-        validate=lambda v: bool(re.match(r"^[a-z][a-z0-9_]*$", v.strip())),
-        invalid_message="Prefix must be lowercase alphanumeric with underscores, starting with a letter.",
+    database = inquirer.text(
+        message="Snowflake database name:",
+        default="snowclaw_db",
+        validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
+        invalid_message="Database name must be alphanumeric with underscores, starting with a letter.",
+    ).execute().strip()
+    schema = inquirer.text(
+        message="Snowflake schema name:",
+        default="snowclaw_schema",
+        validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
+        invalid_message="Schema name must be alphanumeric with underscores, starting with a letter.",
     ).execute().strip()
 
     settings = {
@@ -136,14 +139,16 @@ def cmd_setup(args: argparse.Namespace):
         "slack_app_token": slack_app_token.strip(),
         "warehouse": warehouse.strip(),
         "role": role.strip(),
-        "prefix": prefix,
+        "database": database,
+        "schema": schema,
     }
 
     # --- Write .snowclaw marker ---
     marker = {
         "version": __version__,
         "created": datetime.now(timezone.utc).isoformat(),
-        "prefix": prefix,
+        "database": database,
+        "schema": schema,
         "openclaw_version": "latest",
     }
     write_marker(root, marker)
@@ -238,17 +243,14 @@ def cmd_deploy(args: argparse.Namespace):
     """Build, push, and deploy to SPCS."""
     render_banner()
     root = find_project_root()
-    marker = read_marker(root)
-    env = {**os.environ, **load_dotenv(root / ".env")}
-    conn = load_connections_toml(root / "connections.toml")
+    ctx = load_snowflake_context(root)
 
-    prefix = marker.get("prefix", env.get("SNOWCLAW_PREFIX", "snowclaw"))
-    names = sf_names(prefix)
-
-    account = env.get("SNOWFLAKE_ACCOUNT")
-    token = env.get("SNOWFLAKE_TOKEN")
-    registry_account = env.get("SNOWFLAKE_REGISTRY_ACCOUNT")
-    sf_user = env.get("SNOWFLAKE_USER")
+    account = ctx["account"]
+    token = ctx["token"]
+    registry_account = ctx["registry_account"]
+    sf_user = ctx["user"]
+    names = ctx["names"]
+    env = ctx["env"]
 
     if not all([account, token, registry_account, sf_user]):
         console.print("[red]Missing required environment variables in .env.[/red]")
@@ -259,7 +261,7 @@ def cmd_deploy(args: argparse.Namespace):
     db = names["db"]
     schema_name = names["schema_name"]
     fqn_schema = names["schema"]
-    warehouse = env.get("SNOWFLAKE_WAREHOUSE") or conn.get("warehouse")
+    warehouse = ctx["warehouse"]
     repo = names["repo"]
     registry_host = f"{registry_account}.registry.snowflakecomputing.com"
     image_repo = f"{registry_host}/{db}/{schema_name}/{repo}"
@@ -405,3 +407,106 @@ def cmd_update(args: argparse.Namespace):
     redeploy = inquirer.confirm(message="Redeploy now?", default=False).execute()
     if redeploy:
         cmd_deploy(args)
+
+
+def _sync_targets(args: argparse.Namespace) -> list[str]:
+    """Determine which directories to sync based on CLI flags."""
+    if getattr(args, "workspace_only", False):
+        return ["workspace"]
+    if getattr(args, "skills_only", False):
+        return ["skills"]
+    return ["skills", "workspace"]
+
+
+def cmd_pull(args: argparse.Namespace):
+    """Pull skills and/or workspace from SPCS stage."""
+    from snowclaw.stage import get_sf_connection, pull_directory
+
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    sf_user = ctx["user"]
+    names = ctx["names"]
+
+    if not all([account, token, sf_user]):
+        console.print("[red]Missing required credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
+        sys.exit(1)
+
+    targets = _sync_targets(args)
+    fqn_stage = f"{names['schema']}.{names['stage']}"
+
+    conn = get_sf_connection(
+        account=account,
+        user=sf_user,
+        token=token,
+        warehouse=ctx["warehouse"],
+        database=names["db"],
+        schema=names["schema_name"],
+    )
+    try:
+        for target in targets:
+            local_dir = root / target
+            local_dir.mkdir(parents=True, exist_ok=True)
+            console.print(f"[bold]Pulling {target}/...[/bold]")
+            downloaded = pull_directory(conn, fqn_stage, target, local_dir)
+            for f in downloaded:
+                console.print(f"  [green]✓[/green] {target}/{f}")
+            if not downloaded:
+                console.print(f"  [dim]No files found on stage for {target}/[/dim]")
+    finally:
+        conn.close()
+
+    console.print()
+    console.print("[green]Pull complete.[/green]")
+
+
+def cmd_push(args: argparse.Namespace):
+    """Push skills and/or workspace to SPCS stage."""
+    from snowclaw.stage import get_sf_connection, push_directory
+
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    sf_user = ctx["user"]
+    names = ctx["names"]
+
+    if not all([account, token, sf_user]):
+        console.print("[red]Missing required credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
+        sys.exit(1)
+
+    targets = _sync_targets(args)
+    fqn_stage = f"{names['schema']}.{names['stage']}"
+
+    conn = get_sf_connection(
+        account=account,
+        user=sf_user,
+        token=token,
+        warehouse=ctx["warehouse"],
+        database=names["db"],
+        schema=names["schema_name"],
+    )
+    try:
+        for target in targets:
+            local_dir = root / target
+            if not local_dir.is_dir():
+                console.print(f"  [dim]Skipping {target}/ (directory not found)[/dim]")
+                continue
+            console.print(f"[bold]Pushing {target}/...[/bold]")
+            uploaded = push_directory(conn, fqn_stage, target, local_dir)
+            for f in uploaded:
+                console.print(f"  [green]✓[/green] {target}/{f}")
+            if not uploaded:
+                console.print(f"  [dim]No files to upload in {target}/[/dim]")
+    finally:
+        conn.close()
+
+    console.print()
+    console.print("[green]Push complete.[/green]")

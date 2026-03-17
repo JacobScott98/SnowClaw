@@ -1,12 +1,13 @@
 -- One-time Snowflake object creation for SnowClaw SPCS deployment.
 -- Run with a role that has CREATE DATABASE / CREATE COMPUTE POOL privileges.
--- Replace __SNOWCLAW_PREFIX__ with your chosen prefix (default: snowclaw).
+-- Replace __SNOWCLAW_DB__ and __SNOWCLAW_SCHEMA__ with your database and schema names.
+-- __SNOWCLAW_PREFIX__ is derived from the database name (minus _db suffix).
 
 -- Database and schema
-CREATE DATABASE IF NOT EXISTS __SNOWCLAW_PREFIX___db;
-CREATE SCHEMA IF NOT EXISTS __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema;
+CREATE DATABASE IF NOT EXISTS __SNOWCLAW_DB__;
+CREATE SCHEMA IF NOT EXISTS __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__;
 
-USE SCHEMA __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema;
+USE SCHEMA __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__;
 
 -- Image repository
 CREATE IMAGE REPOSITORY IF NOT EXISTS __SNOWCLAW_PREFIX___repo;
@@ -57,4 +58,4 @@ CREATE COMPUTE POOL IF NOT EXISTS __SNOWCLAW_PREFIX___pool
   INSTANCE_FAMILY = CPU_X64_S;
 
 -- Show image repository URL (needed for docker push)
-SHOW IMAGE REPOSITORIES IN SCHEMA __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema;
+SHOW IMAGE REPOSITORIES IN SCHEMA __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__;

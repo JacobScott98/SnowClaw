@@ -1,18 +1,18 @@
 spec:
   containers:
     - name: openclaw
-      image: /__SNOWCLAW_PREFIX___db/__SNOWCLAW_PREFIX___schema/__SNOWCLAW_PREFIX___repo/snowclaw:latest
+      image: /__SNOWCLAW_DB__/__SNOWCLAW_SCHEMA__/__SNOWCLAW_PREFIX___repo/snowclaw:latest
       secrets:
-        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___openrouter_key
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___openrouter_key
           secretKeyRef: secret_string
           envVarName: OPENROUTER_API_KEY
-        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___sf_token
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
           envVarName: SNOWFLAKE_TOKEN
-        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___slack_bot_token
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_bot_token
           secretKeyRef: secret_string
           envVarName: SLACK_BOT_TOKEN
-        - snowflakeSecret: __SNOWCLAW_PREFIX___db.__SNOWCLAW_PREFIX___schema.__SNOWCLAW_PREFIX___slack_app_token
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_app_token
           secretKeyRef: secret_string
           envVarName: SLACK_APP_TOKEN
       resources:

@@ -81,7 +81,9 @@ def assemble_build_context(root: Path) -> Path:
     Returns the path to the build directory.
     """
     marker = read_marker(root)
-    prefix = marker.get("prefix", "snowclaw")
+    database = marker.get("database", "snowclaw_db")
+    schema_name = marker.get("schema", "snowclaw_schema")
+    prefix = re.sub(r"_db$", "", database.lower())
     openclaw_version = marker.get("openclaw_version", "latest")
     templates = get_templates_dir()
 
@@ -128,10 +130,8 @@ def assemble_build_context(root: Path) -> Path:
     if skills_src.is_dir():
         shutil.copytree(skills_src, build_dir / "skills")
 
-    # Copy user workspace/
-    workspace_src = root / "workspace"
-    if workspace_src.is_dir():
-        shutil.copytree(workspace_src, build_dir / "workspace")
+    # Create empty workspace/ (not baked from user dir — managed via push/pull)
+    (build_dir / "workspace").mkdir()
 
     # Copy plugins from CLI templates
     plugins_src = templates / "plugins"
@@ -144,7 +144,10 @@ def assemble_build_context(root: Path) -> Path:
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
         if src.exists():
-            content = src.read_text().replace("__SNOWCLAW_PREFIX__", prefix)
+            content = src.read_text()
+            content = content.replace("__SNOWCLAW_DB__", database)
+            content = content.replace("__SNOWCLAW_SCHEMA__", schema_name)
+            content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             (spcs_dir / name).write_text(content)
 
     return build_dir

@@ -58,8 +58,9 @@ def run_snowflake_setup(settings: dict):
     """Create Snowflake objects via REST API."""
     account = settings["account"]
     pat = settings["pat"]
-    prefix = settings.get("prefix", "snowclaw")
-    names = sf_names(prefix)
+    database = settings.get("database", "snowclaw_db")
+    schema = settings.get("schema", "snowclaw_schema")
+    names = sf_names(database, schema)
     statements = build_setup_statements(names)
     secret_values = build_secret_values(names)
 
