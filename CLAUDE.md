@@ -10,7 +10,15 @@ The repo is a **scaffolding tool** — it contains only the CLI and templates. U
 
 ```
 snowclaw/                    # CLI repo (installed via pipx)
-  snowclaw.py               # Python CLI — setup, dev, build, deploy, update commands
+  snowclaw/                  # Python package
+    cli.py                   # Entry point and argument parser
+    commands.py              # CLI command implementations
+    config.py                # Config file writers (.env, openclaw.json, connections.toml)
+    network.py               # Network rule management (detect, diff, apply, persist)
+    scaffold.py              # User file scaffolding and build context assembly
+    snowflake.py             # Snowflake object creation via REST API
+    stage.py                 # SPCS stage push/pull
+    utils.py                 # Naming, project discovery, REST API, shared utilities
   pyproject.toml             # Python packaging (hatchling), entry point, deps
   install.sh                 # Curl-able installer — clones repo, pipx install -e
   templates/                 # Used at build time, NOT copied to user projects
@@ -34,6 +42,7 @@ snowclaw/                    # CLI repo (installed via pipx)
 my-openclaw/                 # User's project directory
   .snowclaw/                 # Marker directory
     config.json              # Marker (JSON: version, timestamp, prefix, openclaw_version)
+    network-rules.json       # Approved network rules for external access
     build/                   # Generated at dev/deploy time, gitignored
   .env                       # Generated — actual secrets (gitignored)
   .gitignore                 # Copied from templates/
@@ -60,22 +69,30 @@ my-openclaw/                 # User's project directory
   spcs/
     service.yaml             # From CLI templates, prefix-substituted
     image-repo.sql           # From CLI templates, prefix-substituted
+    network-rules.sql        # Generated from .snowclaw/network-rules.json
 ```
 
-## CLI (`snowclaw.py`)
+## CLI
 
-Single-file Python CLI using argparse + Rich + InquirerPy. Installed via `pipx install -e` from the cloned repo (not published to PyPI — the CLI needs the repo files).
+Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx install -e` from the cloned repo (not published to PyPI — the CLI needs the repo files).
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `snowclaw setup` | Scaffolds user files (skills/, .gitignore, workspace/), collects credentials, writes .env + openclaw.json + connections.toml, optionally creates Snowflake objects via REST API |
+| `snowclaw setup` | Scaffolds user files (skills/, .gitignore, workspace/), collects credentials, writes .env + openclaw.json + connections.toml, detects and prompts for network rules, optionally creates Snowflake objects via REST API |
 | `snowclaw setup --force` | Same as setup, but overwrites existing template files |
 | `snowclaw dev` | Assembles build context into `.snowclaw/build/`, runs `docker compose up --build` |
 | `snowclaw build` | Assembles build context, runs `docker build` (no deploy) |
-| `snowclaw deploy` | Assembles build context, docker build/push to Snowflake registry, creates/updates SPCS service via REST API |
+| `snowclaw deploy` | Checks network rules for changes (prompts if new rules needed), assembles build context, docker build/push to Snowflake registry, creates/updates SPCS service via REST API |
 | `snowclaw update` | Updates `openclaw_version` in `.snowclaw/config.json` marker, optionally redeploys |
+| `snowclaw pull` | Pull skills and/or workspace from SPCS stage (`--workspace-only`, `--skills-only`) |
+| `snowclaw push` | Push skills and/or workspace to SPCS stage (`--workspace-only`, `--skills-only`) |
+| `snowclaw network list` | Show current approved network rules |
+| `snowclaw network add <host[:port]>` | Add a network rule (`--reason` flag optional), prompts to apply to Snowflake |
+| `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply to Snowflake |
+| `snowclaw network detect` | Auto-detect required rules from openclaw.json, show diff, optionally save and apply |
+| `snowclaw network apply` | Push all saved rules to Snowflake (CREATE OR REPLACE network rule + external access integration) |
 | `snowclaw` (bare) | Defaults to `setup` |
 
 ### Installation
@@ -108,9 +125,9 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 - Database: `snowclaw_db`, Schema: `snowclaw_db.snowclaw_schema`
 - Image repository: `snowclaw_repo`
 - Internal stage: `snowclaw_state_stage` (backs persistent volume)
-- Secret: `snowclaw_secrets` (API keys as JSON)
-- Network rule: `snowclaw_egress_rule` (OpenRouter, Slack, Snowflake APIs)
-- External access integration: `snowclaw_external_access`
+- Secrets: `snowclaw_sf_token`, `snowclaw_openrouter_key`, `snowclaw_slack_bot_token`, `snowclaw_slack_app_token`
+- Network rule: `snowclaw_egress_rule` (dynamic — managed by `snowclaw network`)
+- External access integration: `snowclaw_external_access` (references the network rule)
 - Compute pool: `snowclaw_pool` (CPU_X64_S, 1 node)
 
 ### Service spec (`spcs/service.yaml`)
@@ -128,6 +145,39 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 ## Slack Integration (config-only)
 
 Socket mode preferred for SPCS (no public webhook URL needed). Uses `$SLACK_BOT_TOKEN` and `$SLACK_APP_TOKEN`.
+
+## Network Rules (`snowclaw/network.py`)
+
+SPCS blocks all outbound traffic by default. Network rules and external access integrations must be created in Snowflake to allow the container to reach external APIs. SnowClaw manages these dynamically rather than hardcoding them.
+
+### How it works
+
+1. **Auto-detection** (`detect_required_rules()`): Parses `openclaw.json` to find provider `baseUrl` hostnames and enabled channels (Slack). Always includes `*.snowflakecomputing.com:443` for Cortex. Returns a list of `NetworkRule(host, port, reason)`.
+
+2. **Persistence**: Approved rules are saved to `.snowclaw/network-rules.json` (committed to git, not gitignored). Format:
+   ```json
+   {
+     "rules": [
+       {"host": "openrouter.ai", "port": 443, "reason": "openrouter provider"},
+       {"host": "*.snowflakecomputing.com", "port": 443, "reason": "Snowflake Cortex & APIs"}
+     ]
+   }
+   ```
+
+3. **Diff engine** (`diff_rules()`): Compares saved rules against detected/required rules. Returns `(added, removed)` lists.
+
+4. **SQL generation** (`build_network_rule_sql()`): Compiles all rules into two SQL statements:
+   - `CREATE OR REPLACE NETWORK RULE {schema}.{prefix}_egress_rule MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = (...)`
+   - `CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION {prefix}_external_access ALLOWED_NETWORK_RULES = (...) ENABLED = TRUE`
+
+5. **Application** (`apply_network_rules()`): Executes the SQL via Snowflake REST API. Updating the network rule is sufficient — the service's external access integration references it, so changes take effect without redeploying the service.
+
+### Integration points
+
+- **`cmd_setup()`**: After writing config files, detects required rules, prompts for approval, saves to `network-rules.json`, applies to Snowflake alongside other objects.
+- **`cmd_deploy()`**: Before building, diffs saved rules vs. detected. If changes found, shows diff and prompts for approval. Applies before proceeding with deploy.
+- **`assemble_build_context()`**: Generates `spcs/network-rules.sql` in the build context from saved rules (for reference/manual use).
+- **`cmd_network()`**: Manual management — `list`, `add`, `remove`, `detect`, `apply` subcommands. `add` and `remove` prompt to apply immediately.
 
 ## Plugins (stubs — not yet implemented)
 
