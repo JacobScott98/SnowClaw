@@ -5,7 +5,16 @@ from __future__ import annotations
 import argparse
 
 from snowclaw import __version__
-from snowclaw.commands import cmd_build, cmd_deploy, cmd_dev, cmd_pull, cmd_push, cmd_setup, cmd_update
+from snowclaw.commands import (
+    cmd_build,
+    cmd_deploy,
+    cmd_dev,
+    cmd_network,
+    cmd_pull,
+    cmd_push,
+    cmd_setup,
+    cmd_update,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +43,24 @@ def build_parser() -> argparse.ArgumentParser:
     push_group.add_argument("--workspace-only", action="store_true", help="Only push workspace/")
     push_group.add_argument("--skills-only", action="store_true", help="Only push skills/")
 
+    # --- snowclaw network ---
+    net_parser = sub.add_parser(
+        "network", help="Manage network rules for SPCS external access"
+    )
+    net_sub = net_parser.add_subparsers(dest="network_command")
+
+    net_sub.add_parser("list", help="List current approved network rules")
+
+    add_parser = net_sub.add_parser("add", help="Add a network rule")
+    add_parser.add_argument("host", help="Host or host:port (default port 443)")
+    add_parser.add_argument("--reason", "-r", default="", help="Reason for this rule")
+
+    remove_parser = net_sub.add_parser("remove", help="Remove a network rule")
+    remove_parser.add_argument("host", help="Host or host:port to remove")
+
+    net_sub.add_parser("apply", help="Apply current rules to Snowflake")
+    net_sub.add_parser("detect", help="Auto-detect required rules from project config")
+
     return parser
 
 
@@ -49,6 +76,7 @@ def main():
         "update": cmd_update,
         "pull": cmd_pull,
         "push": cmd_push,
+        "network": cmd_network,
     }
 
     handler = commands.get(args.command or "setup")

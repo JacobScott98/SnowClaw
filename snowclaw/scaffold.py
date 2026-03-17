@@ -7,7 +7,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from snowclaw.utils import console, get_templates_dir, read_marker
+from snowclaw.network import build_network_rule_sql, load_network_rules
+from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
 
 
 DOCKER_COMPOSE_TEMPLATE = """\
@@ -149,5 +150,19 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_SCHEMA__", schema_name)
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             (spcs_dir / name).write_text(content)
+
+    # Generate network-rules.sql from saved rules
+    names = sf_names(database, schema_name)
+    rules = load_network_rules(root)
+    if rules:
+        stmts = build_network_rule_sql(names, rules)
+        if stmts:
+            header = (
+                "-- Network rules (generated from .snowclaw/network-rules.json)\n"
+                "-- Manage with: snowclaw network list|add|remove|apply|detect\n\n"
+            )
+            (spcs_dir / "network-rules.sql").write_text(
+                header + ";\n\n".join(stmts) + ";\n"
+            )
 
     return build_dir

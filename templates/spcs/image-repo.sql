@@ -34,22 +34,9 @@ CREATE SECRET IF NOT EXISTS __SNOWCLAW_PREFIX___slack_app_token
   TYPE = GENERIC_STRING
   SECRET_STRING = '';
 
--- Network rule (references network-rules.yaml values)
-CREATE OR REPLACE NETWORK RULE __SNOWCLAW_PREFIX___egress_rule
-  MODE = EGRESS
-  TYPE = HOST_PORT
-  VALUE_LIST = (
-    'openrouter.ai:443',
-    'api.slack.com:443',
-    'wss-primary.slack.com:443',
-    'wss-backup.slack.com:443',
-    '*.snowflakecomputing.com:443'
-  );
-
--- External access integration
-CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION __SNOWCLAW_PREFIX___external_access
-  ALLOWED_NETWORK_RULES = (__SNOWCLAW_PREFIX___egress_rule)
-  ENABLED = TRUE;
+-- Network rules and external access integration are managed dynamically.
+-- Use `snowclaw network` to add, remove, and apply rules.
+-- Rules are stored in .snowclaw/network-rules.json and applied via REST API.
 
 -- Compute pool
 CREATE COMPUTE POOL IF NOT EXISTS __SNOWCLAW_PREFIX___pool

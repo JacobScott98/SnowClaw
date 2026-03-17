@@ -4,7 +4,8 @@ Run [OpenClaw](https://github.com/openclaw/openclaw) on [Snowflake Container Ser
 
 ## Features
 
-- **One-command setup** — Interactive wizard collects credentials, generates config, and optionally provisions all Snowflake objects (database, image repo, compute pool, secrets, network rules) via REST API. No snowsql required.
+- **One-command setup** — Interactive wizard collects credentials, generates config, and optionally provisions all Snowflake objects (database, image repo, compute pool, secrets) via REST API. No snowsql required.
+- **Dynamic network rules** — Auto-detects required external hosts from your config (providers, Slack) and prompts for approval before creating Snowflake network rules. Add custom hosts on the fly with `snowclaw network add`.
 - **Snowflake Cortex LLMs** — Pre-configured as a provider. Models run inside Snowflake with no data leaving your account.
 - **OpenRouter support** — Optional access to 200+ models (Claude, GPT-4, Gemini, Llama, etc.) through a single API key.
 - **Slack integration** — Socket mode out of the box — no public webhook URL needed, which is ideal for SPCS.
@@ -63,8 +64,15 @@ Once complete, open `http://localhost:18789` to access the OpenClaw UI.
 | `snowclaw update` | Update the OpenClaw base image version |
 | `snowclaw pull` | Pull skills and workspace from SPCS stage to local |
 | `snowclaw push` | Push local skills and workspace to SPCS stage |
+| `snowclaw network list` | Show current approved network rules |
+| `snowclaw network add <host>` | Add a network rule (prompts to apply to Snowflake) |
+| `snowclaw network remove <host>` | Remove a network rule |
+| `snowclaw network detect` | Auto-detect required rules from project config |
+| `snowclaw network apply` | Push current rules to Snowflake |
 
 `snowclaw pull` and `snowclaw push` accept `--workspace-only` or `--skills-only` to sync selectively.
+
+`snowclaw network add` accepts `host` or `host:port` (default port 443) and an optional `--reason` flag.
 
 ## Project Structure
 
@@ -74,6 +82,7 @@ After running `snowclaw setup`, your project directory looks like this:
 my-openclaw/
   .snowclaw/              # Project marker and build artifacts
     config.json           # Project metadata (version, prefix, etc.)
+    network-rules.json    # Approved network rules for external access
   .env                    # Secrets — gitignored
   .gitignore
   openclaw.json           # OpenClaw configuration (providers, channels, agents)
@@ -90,6 +99,35 @@ Edit `openclaw.json` to add agents, change model routing, or configure channels.
 **Snowflake Cortex** is always enabled. It uses your Snowflake account credentials to call Cortex LLMs — your data stays within Snowflake.
 
 **OpenRouter** is optional. If you provide an API key during setup, it's configured as an OpenAI-compatible provider at `https://openrouter.ai/api/v1`, giving you access to models from Anthropic, OpenAI, Google, Meta, and others.
+
+## Network Rules
+
+Snowflake Container Services blocks all outbound traffic by default. SnowClaw manages network rules dynamically so your service can reach external APIs.
+
+**During setup**, the CLI auto-detects which hosts are required based on your config (e.g., `openrouter.ai:443` if OpenRouter is enabled, Slack WebSocket endpoints if Slack is enabled, `*.snowflakecomputing.com:443` for Cortex) and prompts you to approve them before creating the Snowflake objects.
+
+**During deploy**, the CLI re-checks your config against saved rules and prompts for approval if anything changed (e.g., you added a new provider).
+
+**Manual management** is available for hosts the CLI can't auto-detect:
+
+```bash
+# Add a custom API endpoint
+snowclaw network add api.example.com --reason "Custom API"
+
+# Add with a non-standard port
+snowclaw network add db.example.com:5432 --reason "External database"
+
+# View current rules
+snowclaw network list
+
+# Remove a rule
+snowclaw network remove api.example.com
+
+# Push current rules to Snowflake
+snowclaw network apply
+```
+
+Rules are saved in `.snowclaw/network-rules.json` (committed to git) and compiled into a single Snowflake `NETWORK RULE` + `EXTERNAL ACCESS INTEGRATION` when applied.
 
 ## Deploying to SPCS
 

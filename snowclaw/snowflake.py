@@ -10,7 +10,11 @@ from snowclaw.utils import console, sf_names, snowflake_rest_execute
 
 
 def build_setup_statements(names: dict) -> list[str]:
-    """Build SQL statements to create non-secret Snowflake objects from derived names."""
+    """Build SQL statements to create non-secret Snowflake objects from derived names.
+
+    Network rules and external access integrations are managed separately
+    via snowclaw.network — they are not included here.
+    """
     s = names["schema"]  # fully qualified: db.schema
     return [
         f"CREATE DATABASE IF NOT EXISTS {names['db']}",
@@ -19,18 +23,6 @@ def build_setup_statements(names: dict) -> list[str]:
         (
             f"CREATE STAGE IF NOT EXISTS {s}.{names['stage']} "
             "ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = (ENABLE = TRUE)"
-        ),
-        (
-            f"CREATE OR REPLACE NETWORK RULE {s}.{names['egress_rule']} "
-            "MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = ("
-            "'openrouter.ai:443', 'api.slack.com:443', "
-            "'wss-primary.slack.com:443', 'wss-backup.slack.com:443', "
-            "'*.snowflakecomputing.com:443')"
-        ),
-        (
-            f"CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION {names['external_access']} "
-            f"ALLOWED_NETWORK_RULES = ({s}.{names['egress_rule']}) "
-            "ENABLED = TRUE"
         ),
         (
             f"CREATE COMPUTE POOL IF NOT EXISTS {names['pool']} "

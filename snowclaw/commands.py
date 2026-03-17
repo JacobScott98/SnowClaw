@@ -15,6 +15,17 @@ from rich.panel import Panel
 
 from snowclaw import __version__
 from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.network import (
+    NetworkRule,
+    apply_network_rules,
+    detect_required_rules,
+    diff_rules,
+    format_rules_table,
+    load_network_rules,
+    parse_host_port,
+    print_diff,
+    save_network_rules,
+)
 from snowclaw.scaffold import assemble_build_context, scaffold_user_files
 from snowclaw.snowflake import run_snowflake_setup
 from snowclaw.utils import (
@@ -24,6 +35,7 @@ from snowclaw.utils import (
     load_snowflake_context,
     read_marker,
     render_banner,
+    sf_names,
     snowflake_rest_execute,
     write_marker,
 )
@@ -160,12 +172,45 @@ def cmd_setup(args: argparse.Namespace):
     write_openclaw_config(root, settings)
     write_connections_toml(root, settings)
 
+    # --- Detect and approve network rules ---
+    console.print()
+    console.print("[bold]Detecting required network rules...[/bold]")
+    detected = detect_required_rules(root)
+    names = sf_names(settings["database"], settings["schema"])
+
+    if detected:
+        console.print()
+        console.print("[bold]The following network rules are required for external access:[/bold]")
+        for r in detected:
+            console.print(
+                f"  [green]+[/green] [cyan]{r.host_port}[/cyan]  [dim]{r.reason}[/dim]"
+            )
+        console.print()
+        approve_rules = inquirer.confirm(
+            message="Approve these network rules?",
+            default=True,
+        ).execute()
+        if approve_rules:
+            save_network_rules(root, detected)
+            console.print("[green]Network rules saved.[/green]")
+        else:
+            console.print(
+                "[yellow]Network rules not approved. External access will be unavailable.[/yellow]"
+            )
+            console.print(
+                "[dim]You can add rules later with [cyan]snowclaw network add <host>[/cyan][/dim]"
+            )
+    else:
+        console.print("  [dim]No external network rules detected.[/dim]")
+
     # --- Optionally create Snowflake objects ---
     console.print()
     create_objects = inquirer.confirm(
         message="Create Snowflake objects now? (database, schema, compute pool, etc.)",
         default=True,
     ).execute()
+
+    approved_rules = load_network_rules(root)
 
     if create_objects:
         console.print()
@@ -175,6 +220,13 @@ def cmd_setup(args: argparse.Namespace):
             console.print("[green]Snowflake objects created successfully.[/green]")
         except Exception:
             console.print("[yellow]Some objects may not have been created. You can retry or create them manually.[/yellow]")
+
+        # Apply approved network rules
+        if approved_rules:
+            console.print()
+            apply_network_rules(
+                settings["account"], settings["pat"], names, approved_rules
+            )
 
     # --- Summary ---
     console.print()
@@ -265,6 +317,44 @@ def cmd_deploy(args: argparse.Namespace):
     repo = names["repo"]
     registry_host = f"{registry_account}.registry.snowflakecomputing.com"
     image_repo = f"{registry_host}/{db}/{schema_name}/{repo}"
+
+    # Check network rules before deploying
+    console.print("[bold]Checking network rules...[/bold]")
+    current_rules = load_network_rules(root)
+    detected_rules = detect_required_rules(root)
+    added, removed = diff_rules(current_rules, detected_rules)
+
+    if added or removed:
+        console.print()
+        console.print("[bold]Network rule changes detected:[/bold]")
+        print_diff(added, removed)
+        console.print()
+        approve = inquirer.confirm(
+            message="Approve these network rule changes?",
+            default=True,
+        ).execute()
+        if approve:
+            # Merge changes
+            removed_set = {(r.host, r.port) for r in removed}
+            merged = [r for r in current_rules if (r.host, r.port) not in removed_set]
+            existing_set = {(r.host, r.port) for r in merged}
+            for r in added:
+                if (r.host, r.port) not in existing_set:
+                    merged.append(r)
+            save_network_rules(root, merged)
+            apply_network_rules(account, token, names, merged)
+            console.print()
+        else:
+            console.print("[dim]Keeping existing network rules.[/dim]")
+            if current_rules:
+                console.print()
+    elif current_rules:
+        console.print(f"  [green]✓[/green] {len(current_rules)} rules up to date")
+        console.print()
+    else:
+        console.print("  [yellow]No network rules configured.[/yellow]")
+        console.print("  [dim]External access will be unavailable. Use [cyan]snowclaw network add <host>[/cyan] to add rules.[/dim]")
+        console.print()
 
     # Assemble build context
     console.print("[bold]Assembling build context...[/bold]")
@@ -510,3 +600,219 @@ def cmd_push(args: argparse.Namespace):
 
     console.print()
     console.print("[green]Push complete.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# snowclaw network
+# ---------------------------------------------------------------------------
+
+
+def cmd_network(args: argparse.Namespace):
+    """Manage network rules for SPCS external access."""
+    sub = getattr(args, "network_command", None)
+    if not sub:
+        # Default: show current rules
+        _network_list(args)
+        return
+
+    dispatch = {
+        "list": _network_list,
+        "add": _network_add,
+        "remove": _network_remove,
+        "apply": _network_apply,
+        "detect": _network_detect,
+    }
+    handler = dispatch.get(sub)
+    if handler:
+        handler(args)
+
+
+def _network_list(args: argparse.Namespace):
+    """List current approved network rules."""
+    render_banner()
+    root = find_project_root()
+    rules = load_network_rules(root)
+
+    if not rules:
+        console.print("[dim]No network rules configured.[/dim]")
+        console.print(
+            "Run [cyan]snowclaw network detect[/cyan] to auto-detect required rules,"
+        )
+        console.print(
+            "or [cyan]snowclaw network add <host>[/cyan] to add one manually."
+        )
+        return
+
+    console.print(format_rules_table(rules))
+    console.print(f"\n[dim]{len(rules)} rule(s) total[/dim]")
+
+
+def _network_add(args: argparse.Namespace):
+    """Add a network rule."""
+    render_banner()
+    root = find_project_root()
+    rules = load_network_rules(root)
+
+    host_input = getattr(args, "host", None)
+    if not host_input:
+        console.print("[red]Usage: snowclaw network add <host[:port]>[/red]")
+        return
+
+    host, port = parse_host_port(host_input)
+    reason = getattr(args, "reason", "") or ""
+
+    # Check for duplicates
+    for r in rules:
+        if r.host == host and r.port == port:
+            console.print(f"[yellow]Rule already exists:[/yellow] {r.host_port}")
+            return
+
+    if not reason:
+        reason = inquirer.text(
+            message=f"Reason for {host}:{port} (optional):",
+            default="",
+        ).execute().strip()
+
+    new_rule = NetworkRule(host, port, reason)
+    rules.append(new_rule)
+    save_network_rules(root, rules)
+    console.print(f"[green]✓[/green] Added [cyan]{new_rule.host_port}[/cyan]")
+
+    # Offer to apply immediately
+    _offer_apply(root)
+
+
+def _network_remove(args: argparse.Namespace):
+    """Remove a network rule."""
+    render_banner()
+    root = find_project_root()
+    rules = load_network_rules(root)
+
+    host_input = getattr(args, "host", None)
+    if not host_input:
+        console.print("[red]Usage: snowclaw network remove <host[:port]>[/red]")
+        return
+
+    host, port = parse_host_port(host_input)
+    original_count = len(rules)
+    rules = [r for r in rules if not (r.host == host and r.port == port)]
+
+    if len(rules) == original_count:
+        console.print(f"[yellow]No rule found matching {host}:{port}[/yellow]")
+        return
+
+    save_network_rules(root, rules)
+    console.print(f"[green]✓[/green] Removed [cyan]{host}:{port}[/cyan]")
+
+    # Offer to apply immediately
+    _offer_apply(root)
+
+
+def _network_apply(args: argparse.Namespace):
+    """Apply current network rules to Snowflake."""
+    render_banner()
+    root = find_project_root()
+    rules = load_network_rules(root)
+
+    if not rules:
+        console.print("[yellow]No network rules to apply.[/yellow]")
+        console.print("Add rules with [cyan]snowclaw network add <host>[/cyan] first.")
+        return
+
+    console.print("[bold]Current network rules:[/bold]")
+    console.print(format_rules_table(rules))
+    console.print()
+
+    approved = inquirer.confirm(
+        message=f"Apply {len(rules)} rule(s) to Snowflake?",
+        default=True,
+    ).execute()
+
+    if not approved:
+        console.print("[dim]Aborted.[/dim]")
+        return
+
+    ctx = load_snowflake_context(root)
+    if not ctx["account"] or not ctx["token"]:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        sys.exit(1)
+
+    success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+    if success:
+        console.print()
+        console.print("[green]Network rules applied to Snowflake.[/green]")
+    else:
+        console.print()
+        console.print("[red]Failed to apply network rules.[/red]")
+        sys.exit(1)
+
+
+def _network_detect(args: argparse.Namespace):
+    """Auto-detect required network rules from project config."""
+    render_banner()
+    root = find_project_root()
+
+    current = load_network_rules(root)
+    detected = detect_required_rules(root)
+
+    if not detected:
+        console.print("[dim]No external access requirements detected in config.[/dim]")
+        return
+
+    console.print("[bold]Detected network rules from project config:[/bold]")
+    console.print(format_rules_table(detected, title="Detected Rules"))
+
+    if current:
+        added, removed = diff_rules(current, detected)
+        if added or removed:
+            console.print()
+            console.print("[bold]Changes vs. current rules:[/bold]")
+            print_diff(added, removed)
+        else:
+            console.print()
+            console.print("[dim]Current rules already match detected requirements.[/dim]")
+            return
+
+    console.print()
+    save_rules = inquirer.confirm(
+        message="Save detected rules?",
+        default=True,
+    ).execute()
+
+    if save_rules:
+        if current:
+            # Merge detected into current
+            added, removed = diff_rules(current, detected)
+            removed_set = {(r.host, r.port) for r in removed}
+            merged = [r for r in current if (r.host, r.port) not in removed_set]
+            existing_set = {(r.host, r.port) for r in merged}
+            for r in added:
+                if (r.host, r.port) not in existing_set:
+                    merged.append(r)
+            save_network_rules(root, merged)
+        else:
+            save_network_rules(root, detected)
+        console.print("[green]✓[/green] Network rules saved.")
+        _offer_apply(root)
+    else:
+        console.print("[dim]Rules not saved.[/dim]")
+
+
+def _offer_apply(root: Path):
+    """Ask whether to apply rules to Snowflake now."""
+    apply_now = inquirer.confirm(
+        message="Apply to Snowflake now?",
+        default=False,
+    ).execute()
+
+    if apply_now:
+        ctx = load_snowflake_context(root)
+        if not ctx["account"] or not ctx["token"]:
+            console.print("[red]Missing Snowflake credentials in .env.[/red]")
+            return
+        rules = load_network_rules(root)
+        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+        if success:
+            console.print("[green]Network rules applied to Snowflake.[/green]")
+        else:
+            console.print("[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]")
