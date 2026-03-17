@@ -10,6 +10,7 @@ mkdir -p "$OPENCLAW_HOME"
 # Always sync the latest config into the (possibly volume-mounted) home dir
 cp -f "$DEFAULTS/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
 cp -rf "$DEFAULTS/skills/" "$OPENCLAW_HOME/skills/"
+cp -rf "$DEFAULTS/workspace/" "$OPENCLAW_HOME/workspace/"
 
 # Auto-approve device pairing requests in the background.
 # SPCS handles auth at the ingress layer, so gateway-level pairing is redundant.

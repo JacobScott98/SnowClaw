@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-snowclaw = "snowclaw:main"
+snowclaw = "snowclaw.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-only-includes = ["snowclaw.py", "templates/"]
+packages = ["snowclaw"]
+only-includes = ["snowclaw/", "templates/"]

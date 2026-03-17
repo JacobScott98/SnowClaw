@@ -1,4 +1,5 @@
 .env
-config/connections.toml
+.snowclaw/build/
+connections.toml
 node_modules/
 *.log

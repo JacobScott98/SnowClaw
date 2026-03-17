@@ -5,6 +5,7 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 # sync them into the volume-mounted OPENCLAW_HOME at runtime.
 COPY --chown=1000:1000 config/openclaw.json /opt/snowclaw/defaults/openclaw.json
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
+COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 
 # Copy Snowflake connection config
 COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections.toml
