@@ -7,7 +7,7 @@ name = "snowclaw"
 version = "0.1.0"
 description = "Bootstrapper for running OpenClaw on Snowflake Container Services"
 requires-python = ">=3.10"
-license = "MIT"
+license = "Apache-2.0"
 dependencies = [
     "rich>=13.0",
     "InquirerPy>=0.3.4",
