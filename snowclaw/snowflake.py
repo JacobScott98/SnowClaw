@@ -6,6 +6,7 @@ import re
 
 import requests
 
+from snowclaw.network import get_channel_secrets
 from snowclaw.utils import console, sf_names, snowflake_rest_execute
 
 
@@ -31,13 +32,21 @@ def build_setup_statements(names: dict) -> list[str]:
     ]
 
 
-def build_secret_values(names: dict) -> dict[str, str]:
-    """Map secret object names to settings keys."""
-    return {
+def build_secret_values(names: dict, channels: list[str]) -> dict[str, str]:
+    """Map secret object names to settings keys.
+
+    Includes infrastructure secrets (sf_token) plus all secret
+    credentials for the given enabled channels.
+    """
+    mapping = {
         names["secret_sf_token"]: "pat",
-        names["secret_slack_bot_token"]: "slack_bot_token",
-        names["secret_slack_app_token"]: "slack_app_token",
     }
+    # Add channel secrets dynamically from the registry
+    prefix = names["prefix"]
+    for sec in get_channel_secrets(prefix, channels):
+        # settings key is the env_var name (e.g. SLACK_BOT_TOKEN)
+        mapping[sec["secret_name"]] = sec["env_var"]
+    return mapping
 
 
 _LABEL_RE = re.compile(
@@ -51,9 +60,10 @@ def run_snowflake_setup(settings: dict):
     pat = settings["pat"]
     database = settings.get("database", "snowclaw_db")
     schema = settings.get("schema", "snowclaw_schema")
+    channels = settings.get("channels", [])
     names = sf_names(database, schema)
     statements = build_setup_statements(names)
-    secret_values = build_secret_values(names)
+    secret_values = build_secret_values(names, channels)
 
     # Build secret statements separately with real values (no string-matching)
     s = names["schema"]
@@ -66,6 +76,22 @@ def run_snowflake_setup(settings: dict):
             f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'"
         )
         secret_stmts.append((stmt, f"{s}.{secret_name}"))
+
+    # Tool credential secrets
+    tool_credentials = settings.get("tool_credentials", {})
+    tool_secret_map = {
+        "GH_TOKEN": names["secret_gh_token"],
+        "BRAVE_API_KEY": names["secret_brave_api_key"],
+    }
+    for env_var, secret_name in tool_secret_map.items():
+        value = tool_credentials.get(env_var, "")
+        if value:
+            escaped = value.replace("'", "\\'")
+            stmt = (
+                f"CREATE OR REPLACE SECRET {s}.{secret_name} "
+                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'"
+            )
+            secret_stmts.append((stmt, f"{s}.{secret_name}"))
 
     def _execute(stmt: str, label: str | None = None):
         if not label:

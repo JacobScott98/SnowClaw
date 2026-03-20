@@ -29,4 +29,9 @@ mkdir -p "$OPENCLAW_HOME/workspace"
   done
 ) &
 
+# If GH_TOKEN is set, configure gh + git credential helper
+if [ -n "$GH_TOKEN" ]; then
+  gh auth setup-git 2>/dev/null || true
+fi
+
 exec "$@"

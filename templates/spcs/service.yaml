@@ -6,12 +6,13 @@ spec:
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
           envVarName: SNOWFLAKE_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_bot_token
+__CHANNEL_SECRETS__
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___gh_token
           secretKeyRef: secret_string
-          envVarName: SLACK_BOT_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_app_token
+          envVarName: GH_TOKEN
+        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
           secretKeyRef: secret_string
-          envVarName: SLACK_APP_TOKEN
+          envVarName: BRAVE_API_KEY
       resources:
         requests:
           cpu: 1

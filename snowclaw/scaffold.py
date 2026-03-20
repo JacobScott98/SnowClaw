@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import sys
 from pathlib import Path
 
-from snowclaw.network import build_network_rule_sql, load_network_rules
+from snowclaw.network import build_network_rule_sql, get_channel_secrets, load_network_rules
 from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
 
 
@@ -142,6 +143,27 @@ def assemble_build_context(root: Path) -> Path:
     # Copy and prefix-substitute SPCS files
     spcs_dir = build_dir / "spcs"
     spcs_dir.mkdir()
+
+    # Determine enabled channels from openclaw.json for service.yaml secrets
+    enabled_channels: list[str] = []
+    openclaw_json = root / "openclaw.json"
+    if openclaw_json.exists():
+        oc_config = json.loads(openclaw_json.read_text())
+        enabled_channels = [
+            ch for ch, cfg in oc_config.get("channels", {}).items()
+            if cfg.get("enabled", False)
+        ]
+
+    # Build channel secrets YAML block for service.yaml
+    fqn_schema = f"{database}.{schema_name}"
+    channel_secrets_yaml = ""
+    for sec in get_channel_secrets(prefix, enabled_channels):
+        channel_secrets_yaml += (
+            f"        - snowflakeSecret: {fqn_schema}.{sec['secret_name']}\n"
+            f"          secretKeyRef: secret_string\n"
+            f"          envVarName: {sec['env_var']}\n"
+        )
+
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
         if src.exists():
@@ -149,6 +171,8 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_DB__", database)
             content = content.replace("__SNOWCLAW_SCHEMA__", schema_name)
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
+            if name == "service.yaml":
+                content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
             (spcs_dir / name).write_text(content)
 
     # Generate network-rules.sql from saved rules
