@@ -451,6 +451,7 @@ def channel_add():
         border_style="green",
         expand=False,
     ))
+    console.print("[dim]Run [cyan]snowclaw deploy[/cyan] to apply changes to your SPCS service.[/dim]")
 
 
 def channel_remove(name: str | None):
@@ -494,6 +495,7 @@ def channel_remove(name: str | None):
         "[dim]Network rules were not removed. Use [cyan]snowclaw network detect[/cyan] "
         "to clean up unused rules.[/dim]"
     )
+    console.print("[dim]Run [cyan]snowclaw deploy[/cyan] to apply changes to your SPCS service.[/dim]")
 
 
 def channel_edit(name: str | None):
@@ -579,3 +581,4 @@ def channel_edit(name: str | None):
     console.print()
     console.print(f"[green]✓[/green] Updated {ct.display_name} / {account_name}")
     console.print(f"  [dim]Updated openclaw.json and .env[/dim]")
+    console.print("[dim]Run [cyan]snowclaw deploy[/cyan] to apply changes to your SPCS service.[/dim]")

@@ -434,8 +434,6 @@ def cmd_deploy(args: argparse.Namespace):
     console.print("[bold]Updating Snowflake secrets...[/bold]")
     secret_map = {
         names["secret_sf_token"]: token,
-        names["secret_slack_bot_token"]: env.get("SLACK_BOT_TOKEN", ""),
-        names["secret_slack_app_token"]: env.get("SLACK_APP_TOKEN", ""),
         names["secret_gh_token"]: env.get("GH_TOKEN", ""),
         names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
     }
