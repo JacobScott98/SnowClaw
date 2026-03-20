@@ -150,7 +150,7 @@ def snowflake_rest_execute(
 def load_snowflake_context(root: Path) -> dict:
     """Load Snowflake connection context from marker + .env + connections.toml.
 
-    Returns dict with: account, token, user, registry_account, database, schema,
+    Returns dict with: account, token, user, database, schema,
     warehouse, names (from sf_names), and the raw env/conn dicts.
     """
     import os as _os
@@ -165,7 +165,6 @@ def load_snowflake_context(root: Path) -> dict:
 
     account = env.get("SNOWFLAKE_ACCOUNT")
     token = env.get("SNOWFLAKE_TOKEN")
-    registry_account = env.get("SNOWFLAKE_REGISTRY_ACCOUNT")
     sf_user = env.get("SNOWFLAKE_USER")
     warehouse = env.get("SNOWFLAKE_WAREHOUSE") or conn.get("warehouse")
 
@@ -173,7 +172,6 @@ def load_snowflake_context(root: Path) -> dict:
         "account": account,
         "token": token,
         "user": sf_user,
-        "registry_account": registry_account,
         "database": database,
         "schema": schema,
         "warehouse": warehouse,

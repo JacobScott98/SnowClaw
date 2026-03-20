@@ -15,7 +15,6 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWCLAW_DB={settings['database']}",
         f"SNOWCLAW_SCHEMA={settings['schema']}",
         f"SNOWFLAKE_ACCOUNT={settings['account']}",
-        f"SNOWFLAKE_REGISTRY_ACCOUNT={settings['registry_account']}",
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
     ]

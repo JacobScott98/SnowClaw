@@ -77,15 +77,9 @@ def cmd_setup(args: argparse.Namespace):
 
     # --- Collect inputs ---
     account = inquirer.text(
-        message="Snowflake account locator:",
+        message="Snowflake account identifier (orgname-accountname):",
         validate=lambda v: len(v.strip()) > 0,
-        invalid_message="Account locator is required.",
-    ).execute()
-
-    registry_account = inquirer.text(
-        message="Snowflake registry account (orgname-accountname, for SPCS image push):",
-        validate=lambda v: len(v.strip()) > 0,
-        invalid_message="Registry account is required for SPCS deployments.",
+        invalid_message="Account identifier is required.",
     ).execute()
 
     sf_user = inquirer.text(
@@ -141,7 +135,6 @@ def cmd_setup(args: argparse.Namespace):
 
     settings = {
         "account": account.strip(),
-        "registry_account": registry_account.strip(),
         "sf_user": sf_user.strip(),
         "pat": pat.strip(),
         "enable_openrouter": "openrouter" in providers,
@@ -299,14 +292,13 @@ def cmd_deploy(args: argparse.Namespace):
 
     account = ctx["account"]
     token = ctx["token"]
-    registry_account = ctx["registry_account"]
     sf_user = ctx["user"]
     names = ctx["names"]
     env = ctx["env"]
 
-    if not all([account, token, registry_account, sf_user]):
+    if not all([account, token, sf_user]):
         console.print("[red]Missing required environment variables in .env.[/red]")
-        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_REGISTRY_ACCOUNT, SNOWFLAKE_USER")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
         sys.exit(1)
 
     image_tag = env.get("IMAGE_TAG", "latest")
@@ -315,7 +307,7 @@ def cmd_deploy(args: argparse.Namespace):
     fqn_schema = names["schema"]
     warehouse = ctx["warehouse"]
     repo = names["repo"]
-    registry_host = f"{registry_account}.registry.snowflakecomputing.com"
+    registry_host = f"{account}.registry.snowflakecomputing.com"
     image_repo = f"{registry_host}/{db}/{schema_name}/{repo}"
 
     # Check network rules before deploying
