@@ -29,6 +29,7 @@ def sf_names(database: str, schema: str) -> dict:
         "db": database,
         "schema": f"{database}.{schema}",
         "schema_name": schema,
+        "prefix": prefix,
         "repo": f"{prefix}_repo",
         "stage": f"{prefix}_state_stage",
         "egress_rule": f"{prefix}_egress_rule",
@@ -37,8 +38,6 @@ def sf_names(database: str, schema: str) -> dict:
         "service": f"{prefix}_service",
         "secret_sf_token": f"{prefix}_sf_token",
         "secret_openrouter_key": f"{prefix}_openrouter_key",
-        "secret_slack_bot_token": f"{prefix}_slack_bot_token",
-        "secret_slack_app_token": f"{prefix}_slack_app_token",
         "secret_gh_token": f"{prefix}_gh_token",
         "secret_brave_api_key": f"{prefix}_brave_api_key",
     }

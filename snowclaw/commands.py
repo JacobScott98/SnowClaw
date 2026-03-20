@@ -16,12 +16,14 @@ from rich.panel import Panel
 from snowclaw import __version__
 from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
 from snowclaw.network import (
+    CHANNEL_REGISTRY,
     TOOL_REGISTRY,
     NetworkRule,
     apply_network_rules,
     detect_required_rules,
     diff_rules,
     format_rules_table,
+    get_channel_secrets,
     load_network_rules,
     parse_host_port,
     print_diff,
@@ -117,13 +119,36 @@ def cmd_setup(args: argparse.Namespace):
             invalid_message="API key is required when OpenRouter is enabled.",
         ).execute()
 
-    enable_slack = inquirer.confirm(message="Enable Slack integration?", default=False).execute()
+    channels = inquirer.checkbox(
+        message="Communication channels to enable:",
+        choices=[
+            {"name": "Telegram (easiest setup)", "value": "telegram"},
+            {"name": "Discord", "value": "discord"},
+            {"name": "Slack", "value": "slack"},
+        ],
+    ).execute()
 
-    slack_bot_token = ""
-    slack_app_token = ""
-    if enable_slack:
-        slack_bot_token = inquirer.secret(message="Slack bot token (xoxb-...):", validate=lambda v: len(v.strip()) > 0).execute()
-        slack_app_token = inquirer.secret(message="Slack app token (xapp-...):", validate=lambda v: len(v.strip()) > 0).execute()
+    # Collect credentials for each selected channel
+    channel_creds: dict[str, str] = {}
+    for ch_key in channels:
+        entry = CHANNEL_REGISTRY.get(ch_key)
+        if not entry:
+            continue
+        console.print(f"\n[bold]{entry['display_name']} credentials:[/bold]")
+        for cred in entry["credentials"]:
+            if cred["secret"]:
+                value = inquirer.secret(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            else:
+                value = inquirer.text(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            channel_creds[cred["env_var"]] = value.strip()
 
     # --- Developer tools ---
     tools = inquirer.checkbox(
@@ -170,13 +195,12 @@ def cmd_setup(args: argparse.Namespace):
         "pat": pat.strip(),
         "enable_openrouter": "openrouter" in providers,
         "openrouter_key": openrouter_key.strip(),
-        "enable_slack": enable_slack,
-        "slack_bot_token": slack_bot_token.strip(),
-        "slack_app_token": slack_app_token.strip(),
+        "channels": channels,
         "warehouse": warehouse.strip(),
         "role": role.strip(),
         "database": database,
         "schema": schema,
+        **channel_creds,
         "tools": tools,
         "tool_credentials": tool_credentials,
     }
@@ -434,6 +458,21 @@ def cmd_deploy(args: argparse.Namespace):
         names["secret_gh_token"]: env.get("GH_TOKEN", ""),
         names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
     }
+
+    # Add channel secrets dynamically from openclaw.json
+    config_path = root / "openclaw.json"
+    if config_path.exists():
+        import json as _json
+
+        oc_config = _json.loads(config_path.read_text())
+        enabled_channels = [
+            ch for ch, cfg in oc_config.get("channels", {}).items()
+            if cfg.get("enabled", False)
+        ]
+        prefix = re.sub(r"_db$", "", db.lower())
+        for sec in get_channel_secrets(prefix, enabled_channels):
+            secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
     for secret_name, value in secret_map.items():
         if value:
             escaped = value.replace("'", "\\'")

@@ -9,12 +9,7 @@ spec:
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
           envVarName: SNOWFLAKE_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_bot_token
-          secretKeyRef: secret_string
-          envVarName: SLACK_BOT_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___slack_app_token
-          secretKeyRef: secret_string
-          envVarName: SLACK_APP_TOKEN
+__CHANNEL_SECRETS__
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___gh_token
           secretKeyRef: secret_string
           envVarName: GH_TOKEN
