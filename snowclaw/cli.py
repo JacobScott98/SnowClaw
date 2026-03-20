@@ -33,15 +33,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("deploy", help="Build, push, and deploy to SPCS")
     sub.add_parser("update", help="Update the OpenClaw version")
 
-    pull_parser = sub.add_parser("pull", help="Pull skills and workspace from SPCS stage")
+    pull_parser = sub.add_parser("pull", help="Pull skills, workspace, and config from SPCS stage")
     pull_group = pull_parser.add_mutually_exclusive_group()
     pull_group.add_argument("--workspace-only", action="store_true", help="Only pull workspace/")
     pull_group.add_argument("--skills-only", action="store_true", help="Only pull skills/")
+    pull_group.add_argument("--config-only", action="store_true", help="Only pull openclaw.json")
 
-    push_parser = sub.add_parser("push", help="Push skills and workspace to SPCS stage")
+    push_parser = sub.add_parser("push", help="Push skills, workspace, and config to SPCS stage")
     push_group = push_parser.add_mutually_exclusive_group()
     push_group.add_argument("--workspace-only", action="store_true", help="Only push workspace/")
     push_group.add_argument("--skills-only", action="store_true", help="Only push skills/")
+    push_group.add_argument("--config-only", action="store_true", help="Only push openclaw.json")
 
     # --- snowclaw network ---
     net_parser = sub.add_parser(
