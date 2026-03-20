@@ -119,6 +119,7 @@ def write_openclaw_config(root: Path, settings: dict):
             }
         }
 
+
     config_path = root / "openclaw.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     console.print(f"  [green]✓[/green] Wrote {config_path}")

@@ -15,6 +15,12 @@ from rich.panel import Panel
 
 from snowclaw import __version__
 from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.channels import (
+    channel_add,
+    channel_edit,
+    channel_list,
+    channel_remove,
+)
 from snowclaw.network import (
     CHANNEL_REGISTRY,
     TOOL_REGISTRY,
@@ -25,6 +31,7 @@ from snowclaw.network import (
     format_rules_table,
     get_channel_secrets,
     load_network_rules,
+    offer_apply_rules,
     parse_host_port,
     print_diff,
     save_network_rules,
@@ -259,6 +266,7 @@ def cmd_setup(args: argparse.Namespace):
     console.print(Panel(
         "[bold]Setup complete![/bold]\n\n"
         "Next steps:\n"
+        "  [cyan]snowclaw channel add[/cyan]     — add Slack, Telegram, or Discord\n"
         "  [cyan]snowclaw dev[/cyan]             — run locally\n"
         "  [cyan]snowclaw deploy[/cyan]          — deploy to SPCS\n",
         title="What's next",
@@ -720,7 +728,7 @@ def _network_add(args: argparse.Namespace):
     console.print(f"[green]✓[/green] Added [cyan]{new_rule.host_port}[/cyan]")
 
     # Offer to apply immediately
-    _offer_apply(root)
+    offer_apply_rules(root)
 
 
 def _network_remove(args: argparse.Namespace):
@@ -746,7 +754,7 @@ def _network_remove(args: argparse.Namespace):
     console.print(f"[green]✓[/green] Removed [cyan]{host}:{port}[/cyan]")
 
     # Offer to apply immediately
-    _offer_apply(root)
+    offer_apply_rules(root)
 
 
 def _network_apply(args: argparse.Namespace):
@@ -834,7 +842,7 @@ def _network_detect(args: argparse.Namespace):
         else:
             save_network_rules(root, detected)
         console.print("[green]✓[/green] Network rules saved.")
-        _offer_apply(root)
+        offer_apply_rules(root)
     else:
         console.print("[dim]Rules not saved.[/dim]")
 
@@ -889,10 +897,6 @@ def cmd_status(args: argparse.Namespace):
         rows = data.get("data", [])
         if rows:
             service_ok = True
-            # DESCRIBE SERVICE returns rows with service properties
-            # Columns typically: name, database_name, schema_name, owner, compute_pool,
-            # ... status is usually in the row data
-            # We'll look at resultSetMetaData to find column positions
             columns = [
                 col["name"].upper()
                 for col in data.get("resultSetMetaData", {}).get("rowType", [])
@@ -979,21 +983,19 @@ def cmd_status(args: argparse.Namespace):
     console.print()
 
 
-def _offer_apply(root: Path):
-    """Ask whether to apply rules to Snowflake now."""
-    apply_now = inquirer.confirm(
-        message="Apply to Snowflake now?",
-        default=False,
-    ).execute()
+def cmd_channel(args: argparse.Namespace):
+    """Manage communication channel configurations."""
+    sub = getattr(args, "channel_command", None)
+    if not sub:
+        channel_list()
+        return
 
-    if apply_now:
-        ctx = load_snowflake_context(root)
-        if not ctx["account"] or not ctx["token"]:
-            console.print("[red]Missing Snowflake credentials in .env.[/red]")
-            return
-        rules = load_network_rules(root)
-        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
-        if success:
-            console.print("[green]Network rules applied to Snowflake.[/green]")
-        else:
-            console.print("[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]")
+    dispatch = {
+        "list": lambda a: channel_list(),
+        "add": lambda a: channel_add(),
+        "remove": lambda a: channel_remove(getattr(a, "name", None)),
+        "edit": lambda a: channel_edit(getattr(a, "name", None)),
+    }
+    handler = dispatch.get(sub)
+    if handler:
+        handler(args)
