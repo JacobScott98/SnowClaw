@@ -35,12 +35,11 @@ def build_setup_statements(names: dict) -> list[str]:
 def build_secret_values(names: dict, channels: list[str]) -> dict[str, str]:
     """Map secret object names to settings keys.
 
-    Includes infrastructure secrets (sf_token, openrouter_key) plus
-    all secret credentials for the given enabled channels.
+    Includes infrastructure secrets (sf_token) plus all secret
+    credentials for the given enabled channels.
     """
     mapping = {
         names["secret_sf_token"]: "pat",
-        names["secret_openrouter_key"]: "openrouter_key",
     }
     # Add channel secrets dynamically from the registry
     prefix = names["prefix"]

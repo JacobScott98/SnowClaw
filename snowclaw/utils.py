@@ -37,7 +37,6 @@ def sf_names(database: str, schema: str) -> dict:
         "pool": f"{prefix}_pool",
         "service": f"{prefix}_service",
         "secret_sf_token": f"{prefix}_sf_token",
-        "secret_openrouter_key": f"{prefix}_openrouter_key",
         "secret_gh_token": f"{prefix}_gh_token",
         "secret_brave_api_key": f"{prefix}_brave_api_key",
     }

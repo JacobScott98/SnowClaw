@@ -3,9 +3,6 @@ spec:
     - name: openclaw
       image: /__SNOWCLAW_DB__/__SNOWCLAW_SCHEMA__/__SNOWCLAW_PREFIX___repo/snowclaw:latest
       secrets:
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___openrouter_key
-          secretKeyRef: secret_string
-          envVarName: OPENROUTER_API_KEY
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
           envVarName: SNOWFLAKE_TOKEN

@@ -19,9 +19,6 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
     ]
-    if settings.get("openrouter_key"):
-        lines.append(f"OPENROUTER_API_KEY={settings['openrouter_key']}")
-
     # Write env vars for all enabled channels
     for ch_key in settings.get("channels", []):
         entry = CHANNEL_REGISTRY.get(ch_key)
@@ -72,15 +69,6 @@ def write_openclaw_config(root: Path, settings: dict):
             }
         ],
     }
-
-    # OpenRouter provider (optional)
-    if settings.get("enable_openrouter"):
-        config["models"]["providers"]["openrouter"] = {
-            "baseUrl": "https://openrouter.ai/api/v1",
-            "apiKey": "${OPENROUTER_API_KEY}",
-            "api": "openai-completions",
-            "models": [],
-        }
 
     # Channels — generate config block for each enabled channel
     for ch_key in settings.get("channels", []):
