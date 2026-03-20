@@ -26,7 +26,7 @@ Run [OpenClaw](https://github.com/openclaw/openclaw) on [Snowflake Container Ser
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/JacobScott98/SnowClaw/main/install.sh | bash
 ```
 
 This clones the repo to `~/snowclaw` (override with `SNOWCLAW_DIR`), installs `pipx` if needed, and registers the `snowclaw` CLI. Re-running the script updates to the latest version.
