@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import requests
 from rich.table import Table
 
-from snowclaw.utils import console, snowflake_rest_execute
+from snowclaw.utils import console, load_snowflake_context, snowflake_rest_execute
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,13 @@ _KNOWN_HOSTS: dict[str, list[NetworkRule]] = {
         NetworkRule("wss-primary.slack.com", 443, "Slack WebSocket (primary)"),
         NetworkRule("wss-backup.slack.com", 443, "Slack WebSocket (backup)"),
     ],
+    "telegram": [
+        NetworkRule("api.telegram.org", 443, "Telegram Bot API"),
+    ],
+    "discord": [
+        NetworkRule("discord.com", 443, "Discord API"),
+        NetworkRule("gateway.discord.gg", 443, "Discord Gateway WebSocket"),
+    ],
 }
 
 
@@ -108,10 +115,12 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
         if host and not host.endswith(".snowflakecomputing.com"):
             rules.append(NetworkRule(host, port, f"{name} provider"))
 
-    # Scan channels for Slack
+    # Scan channels for known types
     channels = config.get("channels", {})
-    if "slack" in channels and channels["slack"].get("enabled", False):
-        rules.extend(_KNOWN_HOSTS["slack"])
+    for ch_name in ("slack", "telegram", "discord"):
+        if ch_name in channels and channels[ch_name].get("enabled", False):
+            if ch_name in _KNOWN_HOSTS:
+                rules.extend(_KNOWN_HOSTS[ch_name])
 
     return _dedup(rules)
 
@@ -341,3 +350,25 @@ def parse_host_port(value: str) -> tuple[str, int]:
         except ValueError:
             pass
     return value, 443
+
+
+def offer_apply_rules(root: Path):
+    """Ask whether to apply rules to Snowflake now."""
+    from InquirerPy import inquirer
+
+    apply_now = inquirer.confirm(
+        message="Apply to Snowflake now?",
+        default=False,
+    ).execute()
+
+    if apply_now:
+        ctx = load_snowflake_context(root)
+        if not ctx["account"] or not ctx["token"]:
+            console.print("[red]Missing Snowflake credentials in .env.[/red]")
+            return
+        rules = load_network_rules(root)
+        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+        if success:
+            console.print("[green]Network rules applied to Snowflake.[/green]")
+        else:
+            console.print("[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]")
