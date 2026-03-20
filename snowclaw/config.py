@@ -21,10 +21,6 @@ def write_dotenv(root: Path, settings: dict):
     ]
     if settings.get("openrouter_key"):
         lines.append(f"OPENROUTER_API_KEY={settings['openrouter_key']}")
-    if settings.get("slack_bot_token"):
-        lines.append(f"SLACK_BOT_TOKEN={settings['slack_bot_token']}")
-    if settings.get("slack_app_token"):
-        lines.append(f"SLACK_APP_TOKEN={settings['slack_app_token']}")
 
     (root / ".env").write_text("\n".join(lines) + "\n")
     console.print(f"  [green]✓[/green] Wrote {root / '.env'}")
@@ -68,19 +64,6 @@ def write_openclaw_config(root: Path, settings: dict):
             "apiKey": "${OPENROUTER_API_KEY}",
             "api": "openai-completions",
             "models": [],
-        }
-
-    # Slack channel (optional)
-    if settings.get("enable_slack"):
-        config["channels"]["slack"] = {
-            "enabled": True,
-            "mode": "socket",
-            "accounts": {
-                "default": {
-                    "botToken": "${SLACK_BOT_TOKEN}",
-                    "appToken": "${SLACK_APP_TOKEN}",
-                }
-            },
         }
 
     config_path = root / "openclaw.json"
