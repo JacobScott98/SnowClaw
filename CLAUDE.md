@@ -125,7 +125,7 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 - Database: `snowclaw_db`, Schema: `snowclaw_db.snowclaw_schema`
 - Image repository: `snowclaw_repo`
 - Internal stage: `snowclaw_state_stage` (backs persistent volume)
-- Secrets: `snowclaw_sf_token`, `snowclaw_openrouter_key`, `snowclaw_slack_bot_token`, `snowclaw_slack_app_token`
+- Secrets: `snowclaw_sf_token`, `snowclaw_slack_bot_token`, `snowclaw_slack_app_token`
 - Network rule: `snowclaw_egress_rule` (dynamic — managed by `snowclaw network`)
 - External access integration: `snowclaw_external_access` (references the network rule)
 - Compute pool: `snowclaw_pool` (CPU_X64_S, 1 node)
@@ -140,7 +140,6 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 ## Model Providers (config-only, no plugins)
 
 - **Snowflake Cortex**: Always enabled. Uses `$SNOWFLAKE_ACCOUNT` and `$SNOWFLAKE_TOKEN` env vars.
-- **OpenRouter**: Optional. OpenAI-compatible at `https://openrouter.ai/api/v1`, uses `$OPENROUTER_API_KEY`.
 
 ## Slack Integration (config-only)
 
@@ -158,7 +157,6 @@ SPCS blocks all outbound traffic by default. Network rules and external access i
    ```json
    {
      "rules": [
-       {"host": "openrouter.ai", "port": 443, "reason": "openrouter provider"},
        {"host": "*.snowflakecomputing.com", "port": 443, "reason": "Snowflake Cortex & APIs"}
      ]
    }
@@ -199,7 +197,6 @@ Slack <--socket--> SPCS Ingress <--> OpenClaw Gateway (port 18789)
                                        +-- /v1/* OpenAI-compat API (same origin)
                                        +-- Plugin HTTP routes (same origin)
                                        |
-                                       +-- OpenRouter (outbound HTTPS)
                                        +-- Snowflake Cortex LLMs (outbound HTTPS)
                                        +-- Cortex Code MCP (plugin route)
 ```

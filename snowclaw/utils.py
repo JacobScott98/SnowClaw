@@ -36,7 +36,6 @@ def sf_names(database: str, schema: str) -> dict:
         "pool": f"{prefix}_pool",
         "service": f"{prefix}_service",
         "secret_sf_token": f"{prefix}_sf_token",
-        "secret_openrouter_key": f"{prefix}_openrouter_key",
         "secret_slack_bot_token": f"{prefix}_slack_bot_token",
         "secret_slack_app_token": f"{prefix}_slack_app_token",
     }

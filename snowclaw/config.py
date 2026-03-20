@@ -19,8 +19,6 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
     ]
-    if settings.get("openrouter_key"):
-        lines.append(f"OPENROUTER_API_KEY={settings['openrouter_key']}")
     if settings.get("slack_bot_token"):
         lines.append(f"SLACK_BOT_TOKEN={settings['slack_bot_token']}")
     if settings.get("slack_app_token"):
@@ -60,15 +58,6 @@ def write_openclaw_config(root: Path, settings: dict):
             }
         ],
     }
-
-    # OpenRouter provider (optional)
-    if settings.get("enable_openrouter"):
-        config["models"]["providers"]["openrouter"] = {
-            "baseUrl": "https://openrouter.ai/api/v1",
-            "apiKey": "${OPENROUTER_API_KEY}",
-            "api": "openai-completions",
-            "models": [],
-        }
 
     # Slack channel (optional)
     if settings.get("enable_slack"):

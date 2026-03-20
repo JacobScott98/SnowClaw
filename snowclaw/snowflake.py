@@ -35,7 +35,6 @@ def build_secret_values(names: dict) -> dict[str, str]:
     """Map secret object names to settings keys."""
     return {
         names["secret_sf_token"]: "pat",
-        names["secret_openrouter_key"]: "openrouter_key",
         names["secret_slack_bot_token"]: "slack_bot_token",
         names["secret_slack_app_token"]: "slack_app_token",
     }

@@ -100,22 +100,6 @@ def cmd_setup(args: argparse.Namespace):
         invalid_message="PAT is required.",
     ).execute()
 
-    providers = inquirer.checkbox(
-        message="Model providers to enable:",
-        choices=[
-            {"name": "Snowflake Cortex", "value": "cortex", "enabled": True},
-            {"name": "OpenRouter", "value": "openrouter", "enabled": False},
-        ],
-    ).execute()
-
-    openrouter_key = ""
-    if "openrouter" in providers:
-        openrouter_key = inquirer.secret(
-            message="OpenRouter API key:",
-            validate=lambda v: len(v.strip()) > 0,
-            invalid_message="API key is required when OpenRouter is enabled.",
-        ).execute()
-
     enable_slack = inquirer.confirm(message="Enable Slack integration?", default=False).execute()
 
     slack_bot_token = ""
@@ -144,8 +128,6 @@ def cmd_setup(args: argparse.Namespace):
         "registry_account": registry_account.strip(),
         "sf_user": sf_user.strip(),
         "pat": pat.strip(),
-        "enable_openrouter": "openrouter" in providers,
-        "openrouter_key": openrouter_key.strip(),
         "enable_slack": enable_slack,
         "slack_bot_token": slack_bot_token.strip(),
         "slack_app_token": slack_app_token.strip(),
@@ -401,7 +383,6 @@ def cmd_deploy(args: argparse.Namespace):
     console.print("[bold]Updating Snowflake secrets...[/bold]")
     secret_map = {
         names["secret_sf_token"]: token,
-        names["secret_openrouter_key"]: env.get("OPENROUTER_API_KEY", ""),
         names["secret_slack_bot_token"]: env.get("SLACK_BOT_TOKEN", ""),
         names["secret_slack_app_token"]: env.get("SLACK_APP_TOKEN", ""),
     }

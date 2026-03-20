@@ -7,7 +7,6 @@ Run [OpenClaw](https://github.com/openclaw/openclaw) on [Snowflake Container Ser
 - **One-command setup** — Interactive wizard collects credentials, generates config, and optionally provisions all Snowflake objects (database, image repo, compute pool, secrets) via REST API. No snowsql required.
 - **Dynamic network rules** — Auto-detects required external hosts from your config (providers, Slack) and prompts for approval before creating Snowflake network rules. Add custom hosts on the fly with `snowclaw network add`.
 - **Snowflake Cortex LLMs** — Pre-configured as a provider. Models run inside Snowflake with no data leaving your account.
-- **OpenRouter support** — Optional access to 200+ models (Claude, GPT-4, Gemini, Llama, etc.) through a single API key.
 - **Slack integration** — Socket mode out of the box — no public webhook URL needed, which is ideal for SPCS.
 - **Cortex Code** — Installed automatically in the container image, with a bundled skill definition for immediate use.
 - **Local dev mode** — `snowclaw dev` builds and runs everything locally with Docker Compose for fast iteration.
@@ -46,7 +45,6 @@ snowclaw dev
 
 The setup wizard will prompt for:
 - Snowflake account, username, and PAT token
-- OpenRouter API key (optional)
 - Slack bot and app tokens (optional)
 - Whether to create Snowflake objects (database, compute pool, etc.)
 
@@ -98,13 +96,11 @@ Edit `openclaw.json` to add agents, change model routing, or configure channels.
 
 **Snowflake Cortex** is always enabled. It uses your Snowflake account credentials to call Cortex LLMs — your data stays within Snowflake.
 
-**OpenRouter** is optional. If you provide an API key during setup, it's configured as an OpenAI-compatible provider at `https://openrouter.ai/api/v1`, giving you access to models from Anthropic, OpenAI, Google, Meta, and others.
-
 ## Network Rules
 
 Snowflake Container Services blocks all outbound traffic by default. SnowClaw manages network rules dynamically so your service can reach external APIs.
 
-**During setup**, the CLI auto-detects which hosts are required based on your config (e.g., `openrouter.ai:443` if OpenRouter is enabled, Slack WebSocket endpoints if Slack is enabled, `*.snowflakecomputing.com:443` for Cortex) and prompts you to approve them before creating the Snowflake objects.
+**During setup**, the CLI auto-detects which hosts are required based on your config (e.g., Slack WebSocket endpoints if Slack is enabled, `*.snowflakecomputing.com:443` for Cortex) and prompts you to approve them before creating the Snowflake objects.
 
 **During deploy**, the CLI re-checks your config against saved rules and prompts for approval if anything changed (e.g., you added a new provider).
 
@@ -156,11 +152,10 @@ Slack <--socket--> SPCS Ingress <--> OpenClaw Gateway (:18789)
                                        +-- Plugin HTTP routes
                                        |
                                        +-- Snowflake Cortex (outbound)
-                                       +-- OpenRouter (outbound)
 ```
 
 All traffic goes through a single SPCS ingress endpoint on port 18789. Snowflake handles TLS and authentication.
 
 ## License
 
-MIT
+Apache-2.0
