@@ -164,6 +164,8 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    service_role = marker.get("service_role", "SNOWCLAW_SERVICE_ROLE")
+
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
         if src.exists():
@@ -173,6 +175,7 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             if name == "service.yaml":
                 content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
+                content = content.replace("__SNOWCLAW_SERVICE_ROLE__", service_role)
             (spcs_dir / name).write_text(content)
 
     # Generate network-rules.sql from saved rules
