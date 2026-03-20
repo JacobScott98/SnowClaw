@@ -80,6 +80,47 @@ _KNOWN_HOSTS: dict[str, list[NetworkRule]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Tool registry — curated developer tools that need credentials + network rules
+# ---------------------------------------------------------------------------
+
+TOOL_REGISTRY: dict[str, dict] = {
+    "github": {
+        "display_name": "GitHub (gh CLI + git auth)",
+        "hosts": [
+            NetworkRule("github.com", 443, "GitHub"),
+            NetworkRule("api.github.com", 443, "GitHub API"),
+        ],
+        "credentials": [
+            {
+                "key": "GH_TOKEN",
+                "env_var": "GH_TOKEN",
+                "label": "GitHub personal access token",
+                "prompt": "GitHub personal access token (PAT):",
+                "secret": True,
+            },
+        ],
+        "default": True,
+    },
+    "brave_search": {
+        "display_name": "Brave Search (web search for agent)",
+        "hosts": [
+            NetworkRule("api.brave.com", 443, "Brave Search API"),
+        ],
+        "credentials": [
+            {
+                "key": "BRAVE_API_KEY",
+                "env_var": "BRAVE_API_KEY",
+                "label": "Brave Search API key",
+                "prompt": "Brave Search API key (brave.com/search/api):",
+                "secret": True,
+            },
+        ],
+        "default": False,
+    },
+}
+
+
 def detect_required_rules(root: Path) -> list[NetworkRule]:
     """Scan project config to detect which network rules are required.
 
@@ -112,6 +153,18 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
     channels = config.get("channels", {})
     if "slack" in channels and channels["slack"].get("enabled", False):
         rules.extend(_KNOWN_HOSTS["slack"])
+
+    # Include hosts for enabled tools (read from marker)
+    marker_path = root / ".snowclaw" / "config.json"
+    enabled_tools: list[str] = []
+    if marker_path.exists():
+        marker = json.loads(marker_path.read_text())
+        enabled_tools = marker.get("tools", [])
+
+    for tool_name in enabled_tools:
+        tool = TOOL_REGISTRY.get(tool_name)
+        if tool:
+            rules.extend(tool["hosts"])
 
     return _dedup(rules)
 
