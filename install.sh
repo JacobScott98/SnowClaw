@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# SnowClaw installer — curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | bash
+# SnowClaw installer — curl -fsSL https://raw.githubusercontent.com/JacobScott98/SnowClaw/main/install.sh | bash
 set -euo pipefail
 
-REPO="https://github.com/OWNER/snowclaw.git"
+REPO="https://github.com/JacobScott98/SnowClaw.git"
 INSTALL_DIR="${SNOWCLAW_DIR:-$HOME/snowclaw}"
 MIN_PYTHON="3.10"
 
