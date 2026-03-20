@@ -67,23 +67,110 @@ def save_network_rules(root: Path, rules: list[NetworkRule]):
 # Auto-detection
 # ---------------------------------------------------------------------------
 
-# Known service -> required hosts mapping
-_KNOWN_HOSTS: dict[str, list[NetworkRule]] = {
+# Non-channel service hosts (always required)
+PROVIDER_HOSTS: dict[str, list[NetworkRule]] = {
     "cortex": [
         NetworkRule("*.snowflakecomputing.com", 443, "Snowflake Cortex & APIs"),
     ],
-    "slack": [
-        NetworkRule("api.slack.com", 443, "Slack Web API"),
-        NetworkRule("wss-primary.slack.com", 443, "Slack WebSocket (primary)"),
-        NetworkRule("wss-backup.slack.com", 443, "Slack WebSocket (backup)"),
-    ],
-    "telegram": [
-        NetworkRule("api.telegram.org", 443, "Telegram Bot API"),
-    ],
-    "discord": [
-        NetworkRule("discord.com", 443, "Discord API"),
-        NetworkRule("gateway.discord.gg", 443, "Discord Gateway WebSocket"),
-    ],
+}
+
+# Single source of truth for channel hosts, credentials, and config templates.
+CHANNEL_REGISTRY: dict[str, dict] = {
+    "telegram": {
+        "display_name": "Telegram",
+        "hosts": [
+            NetworkRule("api.telegram.org", 443, "Telegram Bot API"),
+        ],
+        "credentials": [
+            {"key": "TELEGRAM_BOT_TOKEN", "env_var": "TELEGRAM_BOT_TOKEN", "label": "Bot token", "prompt": "Telegram bot token (from @BotFather):", "secret": True},
+        ],
+    },
+    "discord": {
+        "display_name": "Discord",
+        "hosts": [
+            NetworkRule("gateway.discord.gg", 443, "Discord Gateway WebSocket"),
+            NetworkRule("discord.com", 443, "Discord REST API"),
+            NetworkRule("cdn.discordapp.com", 443, "Discord CDN"),
+        ],
+        "credentials": [
+            {"key": "DISCORD_BOT_TOKEN", "env_var": "DISCORD_BOT_TOKEN", "label": "Bot token", "prompt": "Discord bot token:", "secret": True},
+            {"key": "DISCORD_USER_ID", "env_var": "DISCORD_USER_ID", "label": "Your Discord user ID", "prompt": "Your Discord user ID (enable Developer Mode, right-click avatar → Copy User ID):", "secret": False},
+            {"key": "DISCORD_SERVER_ID", "env_var": "DISCORD_SERVER_ID", "label": "Discord server ID", "prompt": "Discord server/guild ID (right-click server → Copy Server ID):", "secret": False},
+        ],
+    },
+    "slack": {
+        "display_name": "Slack",
+        "hosts": [
+            NetworkRule("api.slack.com", 443, "Slack Web API"),
+            NetworkRule("wss-primary.slack.com", 443, "Slack WebSocket (primary)"),
+            NetworkRule("wss-backup.slack.com", 443, "Slack WebSocket (backup)"),
+        ],
+        "credentials": [
+            {"key": "SLACK_BOT_TOKEN", "env_var": "SLACK_BOT_TOKEN", "label": "Bot token (xoxb-...)", "prompt": "Slack bot token (xoxb-...):", "secret": True},
+            {"key": "SLACK_APP_TOKEN", "env_var": "SLACK_APP_TOKEN", "label": "App token (xapp-...)", "prompt": "Slack app token (xapp-...):", "secret": True},
+        ],
+    },
+}
+
+
+def get_channel_secrets(prefix: str, channels: list[str]) -> list[dict]:
+    """Get Snowflake secret mappings for enabled channels.
+
+    Returns list of dicts with keys: secret_name, env_var.
+    Only includes credentials marked secret=True in the registry.
+    """
+    result = []
+    for ch in channels:
+        info = CHANNEL_REGISTRY.get(ch)
+        if not info:
+            continue
+        for cred in info["credentials"]:
+            if cred["secret"]:
+                result.append({
+                    "secret_name": f"{prefix}_{cred['env_var'].lower()}",
+                    "env_var": cred["env_var"],
+                })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Tool registry — curated developer tools that need credentials + network rules
+# ---------------------------------------------------------------------------
+
+TOOL_REGISTRY: dict[str, dict] = {
+    "github": {
+        "display_name": "GitHub (gh CLI + git auth)",
+        "hosts": [
+            NetworkRule("github.com", 443, "GitHub"),
+            NetworkRule("api.github.com", 443, "GitHub API"),
+        ],
+        "credentials": [
+            {
+                "key": "GH_TOKEN",
+                "env_var": "GH_TOKEN",
+                "label": "GitHub personal access token",
+                "prompt": "GitHub personal access token (PAT):",
+                "secret": True,
+            },
+        ],
+        "default": True,
+    },
+    "brave_search": {
+        "display_name": "Brave Search (web search for agent)",
+        "hosts": [
+            NetworkRule("api.brave.com", 443, "Brave Search API"),
+        ],
+        "credentials": [
+            {
+                "key": "BRAVE_API_KEY",
+                "env_var": "BRAVE_API_KEY",
+                "label": "Brave Search API key",
+                "prompt": "Brave Search API key (brave.com/search/api):",
+                "secret": True,
+            },
+        ],
+        "default": False,
+    },
 }
 
 
@@ -95,7 +182,7 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
     rules: list[NetworkRule] = []
 
     # Always need Snowflake access
-    rules.extend(_KNOWN_HOSTS["cortex"])
+    rules.extend(PROVIDER_HOSTS["cortex"])
 
     config_path = root / "openclaw.json"
     if not config_path.exists():
@@ -115,12 +202,26 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
         if host and not host.endswith(".snowflakecomputing.com"):
             rules.append(NetworkRule(host, port, f"{name} provider"))
 
-    # Scan channels for known types
+    # Scan channels — add hosts for each enabled channel from the registry
     channels = config.get("channels", {})
-    for ch_name in ("slack", "telegram", "discord"):
-        if ch_name in channels and channels[ch_name].get("enabled", False):
-            if ch_name in _KNOWN_HOSTS:
-                rules.extend(_KNOWN_HOSTS[ch_name])
+    for ch_key, ch_config in channels.items():
+        if not ch_config.get("enabled", False):
+            continue
+        registry_entry = CHANNEL_REGISTRY.get(ch_key)
+        if registry_entry:
+            rules.extend(registry_entry["hosts"])
+
+    # Include hosts for enabled tools (read from marker)
+    marker_path = root / ".snowclaw" / "config.json"
+    enabled_tools: list[str] = []
+    if marker_path.exists():
+        marker = json.loads(marker_path.read_text())
+        enabled_tools = marker.get("tools", [])
+
+    for tool_name in enabled_tools:
+        tool = TOOL_REGISTRY.get(tool_name)
+        if tool:
+            rules.extend(tool["hosts"])
 
     return _dedup(rules)
 

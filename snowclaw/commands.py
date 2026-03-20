@@ -22,11 +22,14 @@ from snowclaw.channels import (
     channel_remove,
 )
 from snowclaw.network import (
+    CHANNEL_REGISTRY,
+    TOOL_REGISTRY,
     NetworkRule,
     apply_network_rules,
     detect_required_rules,
     diff_rules,
     format_rules_table,
+    get_channel_secrets,
     load_network_rules,
     offer_apply_rules,
     parse_host_port,
@@ -84,15 +87,9 @@ def cmd_setup(args: argparse.Namespace):
 
     # --- Collect inputs ---
     account = inquirer.text(
-        message="Snowflake account locator:",
+        message="Snowflake account identifier (orgname-accountname):",
         validate=lambda v: len(v.strip()) > 0,
-        invalid_message="Account locator is required.",
-    ).execute()
-
-    registry_account = inquirer.text(
-        message="Snowflake registry account (orgname-accountname, for SPCS image push):",
-        validate=lambda v: len(v.strip()) > 0,
-        invalid_message="Registry account is required for SPCS deployments.",
+        invalid_message="Account identifier is required.",
     ).execute()
 
     sf_user = inquirer.text(
@@ -107,21 +104,59 @@ def cmd_setup(args: argparse.Namespace):
         invalid_message="PAT is required.",
     ).execute()
 
-    providers = inquirer.checkbox(
-        message="Model providers to enable:",
+    channels = inquirer.checkbox(
+        message="Communication channels to enable:",
         choices=[
-            {"name": "Snowflake Cortex", "value": "cortex", "enabled": True},
-            {"name": "OpenRouter", "value": "openrouter", "enabled": False},
+            {"name": "Telegram (easiest setup)", "value": "telegram"},
+            {"name": "Discord", "value": "discord"},
+            {"name": "Slack", "value": "slack"},
         ],
     ).execute()
 
-    openrouter_key = ""
-    if "openrouter" in providers:
-        openrouter_key = inquirer.secret(
-            message="OpenRouter API key:",
-            validate=lambda v: len(v.strip()) > 0,
-            invalid_message="API key is required when OpenRouter is enabled.",
-        ).execute()
+    # Collect credentials for each selected channel
+    channel_creds: dict[str, str] = {}
+    for ch_key in channels:
+        entry = CHANNEL_REGISTRY.get(ch_key)
+        if not entry:
+            continue
+        console.print(f"\n[bold]{entry['display_name']} credentials:[/bold]")
+        for cred in entry["credentials"]:
+            if cred["secret"]:
+                value = inquirer.secret(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            else:
+                value = inquirer.text(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            channel_creds[cred["env_var"]] = value.strip()
+
+    # --- Developer tools ---
+    tools = inquirer.checkbox(
+        message="Developer tools to enable:",
+        choices=[
+            {"name": t["display_name"], "value": name, "enabled": t.get("default", False)}
+            for name, t in TOOL_REGISTRY.items()
+        ],
+    ).execute()
+
+    tool_credentials: dict[str, str] = {}
+    for tool_name in tools:
+        tool = TOOL_REGISTRY[tool_name]
+        for cred in tool["credentials"]:
+            if cred.get("secret"):
+                value = inquirer.secret(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            else:
+                value = inquirer.text(message=cred["prompt"]).execute()
+            tool_credentials[cred["env_var"]] = value.strip()
 
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
     role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
@@ -140,15 +175,16 @@ def cmd_setup(args: argparse.Namespace):
 
     settings = {
         "account": account.strip(),
-        "registry_account": registry_account.strip(),
         "sf_user": sf_user.strip(),
         "pat": pat.strip(),
-        "enable_openrouter": "openrouter" in providers,
-        "openrouter_key": openrouter_key.strip(),
+        "channels": channels,
         "warehouse": warehouse.strip(),
         "role": role.strip(),
         "database": database,
         "schema": schema,
+        **channel_creds,
+        "tools": tools,
+        "tool_credentials": tool_credentials,
     }
 
     # --- Write .snowclaw marker ---
@@ -158,6 +194,7 @@ def cmd_setup(args: argparse.Namespace):
         "database": database,
         "schema": schema,
         "openclaw_version": "latest",
+        "tools": tools,
     }
     write_marker(root, marker)
 
@@ -296,14 +333,13 @@ def cmd_deploy(args: argparse.Namespace):
 
     account = ctx["account"]
     token = ctx["token"]
-    registry_account = ctx["registry_account"]
     sf_user = ctx["user"]
     names = ctx["names"]
     env = ctx["env"]
 
-    if not all([account, token, registry_account, sf_user]):
+    if not all([account, token, sf_user]):
         console.print("[red]Missing required environment variables in .env.[/red]")
-        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_REGISTRY_ACCOUNT, SNOWFLAKE_USER")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
         sys.exit(1)
 
     image_tag = env.get("IMAGE_TAG", "latest")
@@ -312,7 +348,7 @@ def cmd_deploy(args: argparse.Namespace):
     fqn_schema = names["schema"]
     warehouse = ctx["warehouse"]
     repo = names["repo"]
-    registry_host = f"{registry_account}.registry.snowflakecomputing.com"
+    registry_host = f"{account}.registry.snowflakecomputing.com"
     image_repo = f"{registry_host}/{db}/{schema_name}/{repo}"
 
     # Check network rules before deploying
@@ -398,10 +434,26 @@ def cmd_deploy(args: argparse.Namespace):
     console.print("[bold]Updating Snowflake secrets...[/bold]")
     secret_map = {
         names["secret_sf_token"]: token,
-        names["secret_openrouter_key"]: env.get("OPENROUTER_API_KEY", ""),
         names["secret_slack_bot_token"]: env.get("SLACK_BOT_TOKEN", ""),
         names["secret_slack_app_token"]: env.get("SLACK_APP_TOKEN", ""),
+        names["secret_gh_token"]: env.get("GH_TOKEN", ""),
+        names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
     }
+
+    # Add channel secrets dynamically from openclaw.json
+    config_path = root / "openclaw.json"
+    if config_path.exists():
+        import json as _json
+
+        oc_config = _json.loads(config_path.read_text())
+        enabled_channels = [
+            ch for ch, cfg in oc_config.get("channels", {}).items()
+            if cfg.get("enabled", False)
+        ]
+        prefix = re.sub(r"_db$", "", db.lower())
+        for sec in get_channel_secrets(prefix, enabled_channels):
+            secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
     for secret_name, value in secret_map.items():
         if value:
             escaped = value.replace("'", "\\'")
@@ -793,6 +845,142 @@ def _network_detect(args: argparse.Namespace):
         offer_apply_rules(root)
     else:
         console.print("[dim]Rules not saved.[/dim]")
+
+
+def cmd_status(args: argparse.Namespace):
+    """Show the current state of the deployed OpenClaw instance."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    STATUS_COLORS = {
+        "RUNNING": "[green]🟢 RUNNING[/green]",
+        "READY": "[green]🟢 READY[/green]",
+        "ACTIVE": "[green]🟢 ACTIVE[/green]",
+        "PENDING": "[yellow]🟡 PENDING[/yellow]",
+        "STARTING": "[yellow]🟡 STARTING[/yellow]",
+        "IDLE": "[yellow]🟡 IDLE[/yellow]",
+        "SUSPENDING": "[yellow]🟡 SUSPENDING[/yellow]",
+        "RESUMING": "[yellow]🟡 RESUMING[/yellow]",
+        "FAILED": "[red]🔴 FAILED[/red]",
+        "SUSPENDED": "[red]🔴 SUSPENDED[/red]",
+    }
+
+    def fmt_status(status: str) -> str:
+        return STATUS_COLORS.get(status.upper(), f"[dim]{status}[/dim]")
+
+    # --- Service Status ---
+    console.print(f"[bold]Service:[/bold] {service_name}")
+    service_ok = False
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE SERVICE {fqn_schema}.{service_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            service_ok = True
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            status_val = row[col_map["STATUS"]] if "STATUS" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]  {fmt_status(status_val)}")
+
+            if "CREATED_ON" in col_map:
+                console.print(f"[bold]Created:[/bold] [dim]{row[col_map['CREATED_ON']]}[/dim]")
+            if "NUM_INSTANCES" in col_map:
+                console.print(f"[bold]Instances:[/bold] {row[col_map['NUM_INSTANCES']]}")
+        else:
+            console.print("[bold]Status:[/bold]  [red]🔴 No data returned[/red]")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]  [red]🔴 Service not found[/red]")
+        console.print("[dim]Deploy with [cyan]snowclaw deploy[/cyan] first.[/dim]")
+
+    # --- Endpoints ---
+    console.print()
+    if service_ok:
+        try:
+            data = snowflake_rest_execute(
+                account, token,
+                f"SHOW ENDPOINTS IN SERVICE {fqn_schema}.{service_name}",
+                database=db, schema=schema_name,
+            )
+            rows = data.get("data", [])
+            if rows:
+                columns = [
+                    col["name"].upper()
+                    for col in data.get("resultSetMetaData", {}).get("rowType", [])
+                ]
+                col_map = {c: i for i, c in enumerate(columns)}
+                name_idx = col_map.get("NAME", 0)
+                url_idx = col_map.get("INGRESS_URL", col_map.get("URL", 1))
+
+                console.print("[bold]Endpoints:[/bold]")
+                for row in rows:
+                    ep_name = row[name_idx] if name_idx < len(row) else "?"
+                    ep_url = row[url_idx] if url_idx < len(row) else "?"
+                    console.print(f"  {ep_name} → [cyan]{ep_url}[/cyan]")
+            else:
+                console.print("[bold]Endpoints:[/bold] [dim]None available yet[/dim]")
+        except requests.HTTPError:
+            console.print("[bold]Endpoints:[/bold] [dim]Could not retrieve endpoints[/dim]")
+    else:
+        console.print("[bold]Endpoints:[/bold] [dim]N/A (service not found)[/dim]")
+
+    # --- Compute Pool ---
+    console.print()
+    console.print(f"[bold]Compute Pool:[/bold] {pool_name}")
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE COMPUTE POOL {pool_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            pool_status = row[col_map["STATE"]] if "STATE" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]       {fmt_status(pool_status)}")
+
+            if "INSTANCE_FAMILY" in col_map:
+                console.print(f"[bold]Instance:[/bold]     {row[col_map['INSTANCE_FAMILY']]}")
+            if "MIN_NODES" in col_map and "MAX_NODES" in col_map:
+                min_n = row[col_map["MIN_NODES"]]
+                max_n = row[col_map["MAX_NODES"]]
+                console.print(f"[bold]Nodes:[/bold]        {min_n}/{max_n} (min/max)")
+            if "NUM_SERVICES" in col_map:
+                console.print(f"[bold]Services:[/bold]     {row[col_map['NUM_SERVICES']]}")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]       [red]🔴 Compute pool not found[/red]")
+
+    console.print()
 
 
 def cmd_channel(args: argparse.Namespace):

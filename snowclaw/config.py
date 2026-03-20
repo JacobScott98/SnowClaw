@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from snowclaw.network import CHANNEL_REGISTRY
 from snowclaw.utils import console
 
 
@@ -15,12 +16,24 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWCLAW_DB={settings['database']}",
         f"SNOWCLAW_SCHEMA={settings['schema']}",
         f"SNOWFLAKE_ACCOUNT={settings['account']}",
-        f"SNOWFLAKE_REGISTRY_ACCOUNT={settings['registry_account']}",
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
     ]
-    if settings.get("openrouter_key"):
-        lines.append(f"OPENROUTER_API_KEY={settings['openrouter_key']}")
+    # Write env vars for all enabled channels
+    for ch_key in settings.get("channels", []):
+        entry = CHANNEL_REGISTRY.get(ch_key)
+        if not entry:
+            continue
+        for cred in entry["credentials"]:
+            value = settings.get(cred["env_var"], "")
+            if value:
+                lines.append(f"{cred['env_var']}={value}")
+
+    # Tool credentials
+    tool_credentials = settings.get("tool_credentials", {})
+    for env_var, value in tool_credentials.items():
+        if value:
+            lines.append(f"{env_var}={value}")
 
     (root / ".env").write_text("\n".join(lines) + "\n")
     console.print(f"  [green]✓[/green] Wrote {root / '.env'}")
@@ -57,14 +70,55 @@ def write_openclaw_config(root: Path, settings: dict):
         ],
     }
 
-    # OpenRouter provider (optional)
-    if settings.get("enable_openrouter"):
-        config["models"]["providers"]["openrouter"] = {
-            "baseUrl": "https://openrouter.ai/api/v1",
-            "apiKey": "${OPENROUTER_API_KEY}",
-            "api": "openai-completions",
-            "models": [],
+    # Channels — generate config block for each enabled channel
+    for ch_key in settings.get("channels", []):
+        if ch_key == "slack":
+            config["channels"]["slack"] = {
+                "enabled": True,
+                "mode": "socket",
+                "accounts": {
+                    "default": {
+                        "botToken": "${SLACK_BOT_TOKEN}",
+                        "appToken": "${SLACK_APP_TOKEN}",
+                    }
+                },
+            }
+        elif ch_key == "telegram":
+            telegram_config: dict = {
+                "enabled": True,
+            }
+            # Use allowlist if we have the user's Telegram ID, otherwise pairing
+            telegram_id = settings.get("TELEGRAM_USER_ID", "")
+            if telegram_id:
+                telegram_config["dmPolicy"] = "allowlist"
+                telegram_config["allowFrom"] = [telegram_id]
+            else:
+                telegram_config["dmPolicy"] = "pairing"
+            config["channels"]["telegram"] = telegram_config
+        elif ch_key == "discord":
+            discord_config: dict = {
+                "enabled": True,
+                "groupPolicy": "allowlist",
+            }
+            server_id = settings.get("DISCORD_SERVER_ID", "")
+            user_id = settings.get("DISCORD_USER_ID", "")
+            if server_id:
+                guild_config: dict = {"requireMention": True}
+                if user_id:
+                    guild_config["users"] = [user_id]
+                discord_config["guilds"] = {server_id: guild_config}
+            config["channels"]["discord"] = discord_config
+
+    # Brave Search tool (optional)
+    if "brave_search" in settings.get("tools", []):
+        config["tools"] = {
+            "web": {
+                "search": {
+                    "provider": "brave",
+                }
+            }
         }
+
 
     config_path = root / "openclaw.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
