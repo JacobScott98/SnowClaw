@@ -15,6 +15,12 @@ from rich.panel import Panel
 
 from snowclaw import __version__
 from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.channels import (
+    channel_add,
+    channel_edit,
+    channel_list,
+    channel_remove,
+)
 from snowclaw.network import (
     CHANNEL_REGISTRY,
     TOOL_REGISTRY,
@@ -25,6 +31,7 @@ from snowclaw.network import (
     format_rules_table,
     get_channel_secrets,
     load_network_rules,
+    offer_apply_rules,
     parse_host_port,
     print_diff,
     save_network_rules,
@@ -259,6 +266,7 @@ def cmd_setup(args: argparse.Namespace):
     console.print(Panel(
         "[bold]Setup complete![/bold]\n\n"
         "Next steps:\n"
+        "  [cyan]snowclaw channel add[/cyan]     — add Slack, Telegram, or Discord\n"
         "  [cyan]snowclaw dev[/cyan]             — run locally\n"
         "  [cyan]snowclaw deploy[/cyan]          — deploy to SPCS\n",
         title="What's next",
@@ -718,7 +726,7 @@ def _network_add(args: argparse.Namespace):
     console.print(f"[green]✓[/green] Added [cyan]{new_rule.host_port}[/cyan]")
 
     # Offer to apply immediately
-    _offer_apply(root)
+    offer_apply_rules(root)
 
 
 def _network_remove(args: argparse.Namespace):
@@ -744,7 +752,7 @@ def _network_remove(args: argparse.Namespace):
     console.print(f"[green]✓[/green] Removed [cyan]{host}:{port}[/cyan]")
 
     # Offer to apply immediately
-    _offer_apply(root)
+    offer_apply_rules(root)
 
 
 def _network_apply(args: argparse.Namespace):
@@ -832,26 +840,160 @@ def _network_detect(args: argparse.Namespace):
         else:
             save_network_rules(root, detected)
         console.print("[green]✓[/green] Network rules saved.")
-        _offer_apply(root)
+        offer_apply_rules(root)
     else:
         console.print("[dim]Rules not saved.[/dim]")
 
 
-def _offer_apply(root: Path):
-    """Ask whether to apply rules to Snowflake now."""
-    apply_now = inquirer.confirm(
-        message="Apply to Snowflake now?",
-        default=False,
-    ).execute()
+def cmd_status(args: argparse.Namespace):
+    """Show the current state of the deployed OpenClaw instance."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
 
-    if apply_now:
-        ctx = load_snowflake_context(root)
-        if not ctx["account"] or not ctx["token"]:
-            console.print("[red]Missing Snowflake credentials in .env.[/red]")
-            return
-        rules = load_network_rules(root)
-        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
-        if success:
-            console.print("[green]Network rules applied to Snowflake.[/green]")
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    STATUS_COLORS = {
+        "RUNNING": "[green]🟢 RUNNING[/green]",
+        "READY": "[green]🟢 READY[/green]",
+        "ACTIVE": "[green]🟢 ACTIVE[/green]",
+        "PENDING": "[yellow]🟡 PENDING[/yellow]",
+        "STARTING": "[yellow]🟡 STARTING[/yellow]",
+        "IDLE": "[yellow]🟡 IDLE[/yellow]",
+        "SUSPENDING": "[yellow]🟡 SUSPENDING[/yellow]",
+        "RESUMING": "[yellow]🟡 RESUMING[/yellow]",
+        "FAILED": "[red]🔴 FAILED[/red]",
+        "SUSPENDED": "[red]🔴 SUSPENDED[/red]",
+    }
+
+    def fmt_status(status: str) -> str:
+        return STATUS_COLORS.get(status.upper(), f"[dim]{status}[/dim]")
+
+    # --- Service Status ---
+    console.print(f"[bold]Service:[/bold] {service_name}")
+    service_ok = False
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE SERVICE {fqn_schema}.{service_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            service_ok = True
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            status_val = row[col_map["STATUS"]] if "STATUS" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]  {fmt_status(status_val)}")
+
+            if "CREATED_ON" in col_map:
+                console.print(f"[bold]Created:[/bold] [dim]{row[col_map['CREATED_ON']]}[/dim]")
+            if "NUM_INSTANCES" in col_map:
+                console.print(f"[bold]Instances:[/bold] {row[col_map['NUM_INSTANCES']]}")
         else:
-            console.print("[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]")
+            console.print("[bold]Status:[/bold]  [red]🔴 No data returned[/red]")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]  [red]🔴 Service not found[/red]")
+        console.print("[dim]Deploy with [cyan]snowclaw deploy[/cyan] first.[/dim]")
+
+    # --- Endpoints ---
+    console.print()
+    if service_ok:
+        try:
+            data = snowflake_rest_execute(
+                account, token,
+                f"SHOW ENDPOINTS IN SERVICE {fqn_schema}.{service_name}",
+                database=db, schema=schema_name,
+            )
+            rows = data.get("data", [])
+            if rows:
+                columns = [
+                    col["name"].upper()
+                    for col in data.get("resultSetMetaData", {}).get("rowType", [])
+                ]
+                col_map = {c: i for i, c in enumerate(columns)}
+                name_idx = col_map.get("NAME", 0)
+                url_idx = col_map.get("INGRESS_URL", col_map.get("URL", 1))
+
+                console.print("[bold]Endpoints:[/bold]")
+                for row in rows:
+                    ep_name = row[name_idx] if name_idx < len(row) else "?"
+                    ep_url = row[url_idx] if url_idx < len(row) else "?"
+                    console.print(f"  {ep_name} → [cyan]{ep_url}[/cyan]")
+            else:
+                console.print("[bold]Endpoints:[/bold] [dim]None available yet[/dim]")
+        except requests.HTTPError:
+            console.print("[bold]Endpoints:[/bold] [dim]Could not retrieve endpoints[/dim]")
+    else:
+        console.print("[bold]Endpoints:[/bold] [dim]N/A (service not found)[/dim]")
+
+    # --- Compute Pool ---
+    console.print()
+    console.print(f"[bold]Compute Pool:[/bold] {pool_name}")
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE COMPUTE POOL {pool_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            pool_status = row[col_map["STATE"]] if "STATE" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]       {fmt_status(pool_status)}")
+
+            if "INSTANCE_FAMILY" in col_map:
+                console.print(f"[bold]Instance:[/bold]     {row[col_map['INSTANCE_FAMILY']]}")
+            if "MIN_NODES" in col_map and "MAX_NODES" in col_map:
+                min_n = row[col_map["MIN_NODES"]]
+                max_n = row[col_map["MAX_NODES"]]
+                console.print(f"[bold]Nodes:[/bold]        {min_n}/{max_n} (min/max)")
+            if "NUM_SERVICES" in col_map:
+                console.print(f"[bold]Services:[/bold]     {row[col_map['NUM_SERVICES']]}")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]       [red]🔴 Compute pool not found[/red]")
+
+    console.print()
+
+
+def cmd_channel(args: argparse.Namespace):
+    """Manage communication channel configurations."""
+    sub = getattr(args, "channel_command", None)
+    if not sub:
+        channel_list()
+        return
+
+    dispatch = {
+        "list": lambda a: channel_list(),
+        "add": lambda a: channel_add(),
+        "remove": lambda a: channel_remove(getattr(a, "name", None)),
+        "edit": lambda a: channel_edit(getattr(a, "name", None)),
+    }
+    handler = dispatch.get(sub)
+    if handler:
+        handler(args)

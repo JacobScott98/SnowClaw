@@ -7,12 +7,14 @@ import argparse
 from snowclaw import __version__
 from snowclaw.commands import (
     cmd_build,
+    cmd_channel,
     cmd_deploy,
     cmd_dev,
     cmd_network,
     cmd_pull,
     cmd_push,
     cmd_setup,
+    cmd_status,
     cmd_update,
 )
 
@@ -31,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser = sub.add_parser("build", help="Assemble build context and build Docker image")
     build_parser.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     sub.add_parser("deploy", help="Build, push, and deploy to SPCS")
+    sub.add_parser("status", help="Show deployed service status, endpoints, and compute pool")
     sub.add_parser("update", help="Update the OpenClaw version")
 
     pull_parser = sub.add_parser("pull", help="Pull skills and workspace from SPCS stage")
@@ -61,6 +64,21 @@ def build_parser() -> argparse.ArgumentParser:
     net_sub.add_parser("apply", help="Apply current rules to Snowflake")
     net_sub.add_parser("detect", help="Auto-detect required rules from project config")
 
+    # --- snowclaw channel ---
+    ch_parser = sub.add_parser(
+        "channel", help="Manage communication channel configurations"
+    )
+    ch_sub = ch_parser.add_subparsers(dest="channel_command")
+
+    ch_sub.add_parser("list", help="List configured channels")
+    ch_sub.add_parser("add", help="Interactive wizard to add a channel")
+
+    ch_remove_parser = ch_sub.add_parser("remove", help="Remove a channel")
+    ch_remove_parser.add_argument("name", help="Channel type to remove (e.g. slack, telegram, discord)")
+
+    ch_edit_parser = ch_sub.add_parser("edit", help="Edit channel credentials")
+    ch_edit_parser.add_argument("name", help="Channel type to edit (e.g. slack, telegram, discord)")
+
     return parser
 
 
@@ -73,10 +91,12 @@ def main():
         "dev": cmd_dev,
         "build": cmd_build,
         "deploy": cmd_deploy,
+        "status": cmd_status,
         "update": cmd_update,
         "pull": cmd_pull,
         "push": cmd_push,
         "network": cmd_network,
+        "channel": cmd_channel,
     }
 
     handler = commands.get(args.command or "setup")

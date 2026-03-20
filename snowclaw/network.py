@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import requests
 from rich.table import Table
 
-from snowclaw.utils import console, snowflake_rest_execute
+from snowclaw.utils import console, load_snowflake_context, snowflake_rest_execute
 
 
 @dataclass(frozen=True)
@@ -451,3 +451,25 @@ def parse_host_port(value: str) -> tuple[str, int]:
         except ValueError:
             pass
     return value, 443
+
+
+def offer_apply_rules(root: Path):
+    """Ask whether to apply rules to Snowflake now."""
+    from InquirerPy import inquirer
+
+    apply_now = inquirer.confirm(
+        message="Apply to Snowflake now?",
+        default=False,
+    ).execute()
+
+    if apply_now:
+        ctx = load_snowflake_context(root)
+        if not ctx["account"] or not ctx["token"]:
+            console.print("[red]Missing Snowflake credentials in .env.[/red]")
+            return
+        rules = load_network_rules(root)
+        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+        if success:
+            console.print("[green]Network rules applied to Snowflake.[/green]")
+        else:
+            console.print("[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]")
