@@ -14,6 +14,9 @@ COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections
 RUN SKIP_PODMAN=1 NON_INTERACTIVE=1 \
  sh -c 'curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh'
 
+# Switch to root for system-level installs
+USER root
+
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -23,8 +26,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure the openclaw home dir exists with correct ownership so volume mounts work
-USER root
 RUN mkdir -p /home/node/.openclaw && chown 1000:1000 /home/node/.openclaw
+
 USER node
 
 # Entrypoint wrapper syncs defaults into the volume-mounted home dir

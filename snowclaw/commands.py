@@ -426,8 +426,6 @@ def cmd_deploy(args: argparse.Namespace):
     console.print("[bold]Updating Snowflake secrets...[/bold]")
     secret_map = {
         names["secret_sf_token"]: token,
-        names["secret_slack_bot_token"]: env.get("SLACK_BOT_TOKEN", ""),
-        names["secret_slack_app_token"]: env.get("SLACK_APP_TOKEN", ""),
         names["secret_gh_token"]: env.get("GH_TOKEN", ""),
         names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
     }
@@ -447,18 +445,18 @@ def cmd_deploy(args: argparse.Namespace):
             secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
 
     for secret_name, value in secret_map.items():
-        if value:
-            escaped = value.replace("'", "\\'")
-            try:
-                snowflake_rest_execute(
-                    account, token,
-                    f"ALTER SECRET {fqn_schema}.{secret_name} SET SECRET_STRING = '{escaped}'",
-                    database=db, schema=schema_name,
-                )
-                console.print(f"  [green]✓[/green] Updated {secret_name}")
-            except requests.HTTPError as e:
-                console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
-                raise
+        escaped = value.replace("'", "\\'") if value else ""
+        try:
+            snowflake_rest_execute(
+                account, token,
+                f"CREATE OR REPLACE SECRET {fqn_schema}.{secret_name} "
+                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'",
+                database=db, schema=schema_name,
+            )
+            console.print(f"  [green]✓[/green] Updated {secret_name}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
+            raise
 
     # Create/alter SPCS service
     console.print()
