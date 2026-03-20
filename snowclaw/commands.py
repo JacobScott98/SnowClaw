@@ -17,6 +17,7 @@ from snowclaw import __version__
 from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
 from snowclaw.network import (
     CHANNEL_REGISTRY,
+    TOOL_REGISTRY,
     NetworkRule,
     apply_network_rules,
     detect_required_rules,
@@ -149,6 +150,29 @@ def cmd_setup(args: argparse.Namespace):
                 ).execute()
             channel_creds[cred["env_var"]] = value.strip()
 
+    # --- Developer tools ---
+    tools = inquirer.checkbox(
+        message="Developer tools to enable:",
+        choices=[
+            {"name": t["display_name"], "value": name, "enabled": t.get("default", False)}
+            for name, t in TOOL_REGISTRY.items()
+        ],
+    ).execute()
+
+    tool_credentials: dict[str, str] = {}
+    for tool_name in tools:
+        tool = TOOL_REGISTRY[tool_name]
+        for cred in tool["credentials"]:
+            if cred.get("secret"):
+                value = inquirer.secret(
+                    message=cred["prompt"],
+                    validate=lambda v: len(v.strip()) > 0,
+                    invalid_message=f"{cred['label']} is required.",
+                ).execute()
+            else:
+                value = inquirer.text(message=cred["prompt"]).execute()
+            tool_credentials[cred["env_var"]] = value.strip()
+
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
     role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
     database = inquirer.text(
@@ -177,6 +201,8 @@ def cmd_setup(args: argparse.Namespace):
         "database": database,
         "schema": schema,
         **channel_creds,
+        "tools": tools,
+        "tool_credentials": tool_credentials,
     }
 
     # --- Write .snowclaw marker ---
@@ -186,6 +212,7 @@ def cmd_setup(args: argparse.Namespace):
         "database": database,
         "schema": schema,
         "openclaw_version": "latest",
+        "tools": tools,
     }
     write_marker(root, marker)
 
@@ -426,6 +453,10 @@ def cmd_deploy(args: argparse.Namespace):
     secret_map = {
         names["secret_sf_token"]: token,
         names["secret_openrouter_key"]: env.get("OPENROUTER_API_KEY", ""),
+        names["secret_slack_bot_token"]: env.get("SLACK_BOT_TOKEN", ""),
+        names["secret_slack_app_token"]: env.get("SLACK_APP_TOKEN", ""),
+        names["secret_gh_token"]: env.get("GH_TOKEN", ""),
+        names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
     }
 
     # Add channel secrets dynamically from openclaw.json

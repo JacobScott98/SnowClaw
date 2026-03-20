@@ -33,6 +33,12 @@ def write_dotenv(root: Path, settings: dict):
             if value:
                 lines.append(f"{cred['env_var']}={value}")
 
+    # Tool credentials
+    tool_credentials = settings.get("tool_credentials", {})
+    for env_var, value in tool_credentials.items():
+        if value:
+            lines.append(f"{env_var}={value}")
+
     (root / ".env").write_text("\n".join(lines) + "\n")
     console.print(f"  [green]✓[/green] Wrote {root / '.env'}")
 
@@ -115,6 +121,16 @@ def write_openclaw_config(root: Path, settings: dict):
                     guild_config["users"] = [user_id]
                 discord_config["guilds"] = {server_id: guild_config}
             config["channels"]["discord"] = discord_config
+
+    # Brave Search tool (optional)
+    if "brave_search" in settings.get("tools", []):
+        config["tools"] = {
+            "web": {
+                "search": {
+                    "provider": "brave",
+                }
+            }
+        }
 
     config_path = root / "openclaw.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")

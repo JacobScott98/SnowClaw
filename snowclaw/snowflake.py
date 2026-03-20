@@ -78,6 +78,22 @@ def run_snowflake_setup(settings: dict):
         )
         secret_stmts.append((stmt, f"{s}.{secret_name}"))
 
+    # Tool credential secrets
+    tool_credentials = settings.get("tool_credentials", {})
+    tool_secret_map = {
+        "GH_TOKEN": names["secret_gh_token"],
+        "BRAVE_API_KEY": names["secret_brave_api_key"],
+    }
+    for env_var, secret_name in tool_secret_map.items():
+        value = tool_credentials.get(env_var, "")
+        if value:
+            escaped = value.replace("'", "\\'")
+            stmt = (
+                f"CREATE OR REPLACE SECRET {s}.{secret_name} "
+                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'"
+            )
+            secret_stmts.append((stmt, f"{s}.{secret_name}"))
+
     def _execute(stmt: str, label: str | None = None):
         if not label:
             m = _LABEL_RE.search(stmt)
