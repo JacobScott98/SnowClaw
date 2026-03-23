@@ -547,17 +547,19 @@ def cmd_update(args: argparse.Namespace):
 
 
 def _sync_targets(args: argparse.Namespace) -> list[str]:
-    """Determine which directories to sync based on CLI flags."""
+    """Determine which targets to sync based on CLI flags."""
     if getattr(args, "workspace_only", False):
         return ["workspace"]
     if getattr(args, "skills_only", False):
         return ["skills"]
-    return ["skills", "workspace"]
+    if getattr(args, "config_only", False):
+        return ["config"]
+    return ["skills", "workspace", "config"]
 
 
 def cmd_pull(args: argparse.Namespace):
-    """Pull skills and/or workspace from SPCS stage."""
-    from snowclaw.stage import get_sf_connection, pull_directory
+    """Pull skills, workspace, and/or config from SPCS stage."""
+    from snowclaw.stage import get_sf_connection, pull_directory, stage_list, stage_pull_file
 
     render_banner()
     root = find_project_root()
@@ -586,14 +588,24 @@ def cmd_pull(args: argparse.Namespace):
     )
     try:
         for target in targets:
-            local_dir = root / target
-            local_dir.mkdir(parents=True, exist_ok=True)
-            console.print(f"[bold]Pulling {target}/...[/bold]")
-            downloaded = pull_directory(conn, fqn_stage, target, local_dir)
-            for f in downloaded:
-                console.print(f"  [green]✓[/green] {target}/{f}")
-            if not downloaded:
-                console.print(f"  [dim]No files found on stage for {target}/[/dim]")
+            if target == "config":
+                console.print("[bold]Pulling openclaw.json...[/bold]")
+                # Check if openclaw.json exists on stage
+                files = stage_list(conn, fqn_stage, prefix="openclaw.json")
+                if not files:
+                    console.print("  [dim]No openclaw.json found on stage[/dim]")
+                    continue
+                stage_pull_file(conn, fqn_stage, "openclaw.json", str(root))
+                console.print("  [green]✓[/green] Pulled openclaw.json")
+            else:
+                local_dir = root / target
+                local_dir.mkdir(parents=True, exist_ok=True)
+                console.print(f"[bold]Pulling {target}/...[/bold]")
+                downloaded = pull_directory(conn, fqn_stage, target, local_dir)
+                for f in downloaded:
+                    console.print(f"  [green]✓[/green] {target}/{f}")
+                if not downloaded:
+                    console.print(f"  [dim]No files found on stage for {target}/[/dim]")
     finally:
         conn.close()
 
@@ -602,8 +614,8 @@ def cmd_pull(args: argparse.Namespace):
 
 
 def cmd_push(args: argparse.Namespace):
-    """Push skills and/or workspace to SPCS stage."""
-    from snowclaw.stage import get_sf_connection, push_directory
+    """Push skills, workspace, and/or config to SPCS stage."""
+    from snowclaw.stage import get_sf_connection, push_directory, stage_push_file
 
     render_banner()
     root = find_project_root()
@@ -632,16 +644,25 @@ def cmd_push(args: argparse.Namespace):
     )
     try:
         for target in targets:
-            local_dir = root / target
-            if not local_dir.is_dir():
-                console.print(f"  [dim]Skipping {target}/ (directory not found)[/dim]")
-                continue
-            console.print(f"[bold]Pushing {target}/...[/bold]")
-            uploaded = push_directory(conn, fqn_stage, target, local_dir)
-            for f in uploaded:
-                console.print(f"  [green]✓[/green] {target}/{f}")
-            if not uploaded:
-                console.print(f"  [dim]No files to upload in {target}/[/dim]")
+            if target == "config":
+                config_file = root / "openclaw.json"
+                if not config_file.is_file():
+                    console.print("  [dim]Skipping openclaw.json (file not found)[/dim]")
+                    continue
+                console.print("[bold]Pushing openclaw.json...[/bold]")
+                stage_push_file(conn, fqn_stage, str(config_file), "")
+                console.print("  [green]✓[/green] Pushed openclaw.json")
+            else:
+                local_dir = root / target
+                if not local_dir.is_dir():
+                    console.print(f"  [dim]Skipping {target}/ (directory not found)[/dim]")
+                    continue
+                console.print(f"[bold]Pushing {target}/...[/bold]")
+                uploaded = push_directory(conn, fqn_stage, target, local_dir)
+                for f in uploaded:
+                    console.print(f"  [green]✓[/green] {target}/{f}")
+                if not uploaded:
+                    console.print(f"  [dim]No files to upload in {target}/[/dim]")
     finally:
         conn.close()
 
