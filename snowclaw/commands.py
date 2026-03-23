@@ -1002,6 +1002,110 @@ def cmd_status(args: argparse.Namespace):
     console.print()
 
 
+def cmd_suspend(args: argparse.Namespace):
+    """Suspend the SPCS service and compute pool."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    # Suspend service first (required before suspending compute pool)
+    console.print(f"[bold]Suspending service {service_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {fqn_schema}.{service_name} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend service: {e}")
+        sys.exit(1)
+
+    # Suspend compute pool
+    console.print(f"[bold]Suspending compute pool {pool_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER COMPUTE POOL {pool_name} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Compute pool suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend compute pool: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Suspend complete.[/green]")
+
+
+def cmd_resume(args: argparse.Namespace):
+    """Resume the SPCS compute pool and service."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    # Resume compute pool first (required before resuming service)
+    console.print(f"[bold]Resuming compute pool {pool_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER COMPUTE POOL {pool_name} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Compute pool resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume compute pool: {e}")
+        sys.exit(1)
+
+    # Resume service
+    console.print(f"[bold]Resuming service {service_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {fqn_schema}.{service_name} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume service: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Resume complete.[/green]")
+
+
 def cmd_channel(args: argparse.Namespace):
     """Manage communication channel configurations."""
     sub = getattr(args, "channel_command", None)

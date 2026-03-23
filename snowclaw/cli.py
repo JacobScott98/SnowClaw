@@ -13,8 +13,10 @@ from snowclaw.commands import (
     cmd_network,
     cmd_pull,
     cmd_push,
+    cmd_resume,
     cmd_setup,
     cmd_status,
+    cmd_suspend,
     cmd_update,
 )
 
@@ -34,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     sub.add_parser("deploy", help="Build, push, and deploy to SPCS")
     sub.add_parser("status", help="Show deployed service status, endpoints, and compute pool")
+    sub.add_parser("suspend", help="Suspend the SPCS service and compute pool")
+    sub.add_parser("resume", help="Resume the SPCS compute pool and service")
     sub.add_parser("update", help="Update the OpenClaw version")
 
     pull_parser = sub.add_parser("pull", help="Pull skills, workspace, and config from SPCS stage")
@@ -94,6 +98,8 @@ def main():
         "build": cmd_build,
         "deploy": cmd_deploy,
         "status": cmd_status,
+        "suspend": cmd_suspend,
+        "resume": cmd_resume,
         "update": cmd_update,
         "pull": cmd_pull,
         "push": cmd_push,
