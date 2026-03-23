@@ -13,6 +13,8 @@ __CHANNEL_SECRETS__
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
           secretKeyRef: secret_string
           envVarName: BRAVE_API_KEY
+      env:
+        SNOWFLAKE_ROLE: __SNOWCLAW_SERVICE_ROLE__
       resources:
         requests:
           cpu: 1

@@ -167,6 +167,15 @@ def load_snowflake_context(root: Path) -> dict:
     token = env.get("SNOWFLAKE_TOKEN")
     sf_user = env.get("SNOWFLAKE_USER")
     warehouse = env.get("SNOWFLAKE_WAREHOUSE") or conn.get("warehouse")
+    admin_role = (
+        env.get("SNOWCLAW_ADMIN_ROLE")
+        or conn.get("role")
+        or marker.get("admin_role", "SYSADMIN")
+    )
+    service_role = (
+        env.get("SNOWCLAW_SERVICE_ROLE")
+        or marker.get("service_role", "SNOWCLAW_SERVICE_ROLE")
+    )
 
     return {
         "account": account,
@@ -175,6 +184,8 @@ def load_snowflake_context(root: Path) -> dict:
         "database": database,
         "schema": schema,
         "warehouse": warehouse,
+        "admin_role": admin_role,
+        "service_role": service_role,
         "names": names,
         "env": env,
         "conn": conn,
