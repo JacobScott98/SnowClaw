@@ -25,6 +25,8 @@ def write_dotenv(root: Path, settings: dict):
         if not entry:
             continue
         for cred in entry["credentials"]:
+            if cred.get("inline"):
+                continue
             value = settings.get(cred["env_var"], "")
             if value:
                 lines.append(f"{cred['env_var']}={value}")
@@ -84,17 +86,13 @@ def write_openclaw_config(root: Path, settings: dict):
                 },
             }
         elif ch_key == "telegram":
-            telegram_config: dict = {
+            telegram_user_id = settings.get("TELEGRAM_USER_ID", "")
+            config["channels"]["telegram"] = {
                 "enabled": True,
+                "botToken": "${TELEGRAM_BOT_TOKEN}",
+                "dmPolicy": "allowlist",
+                "allowFrom": [telegram_user_id] if telegram_user_id else [],
             }
-            # Use allowlist if we have the user's Telegram ID, otherwise pairing
-            telegram_id = settings.get("TELEGRAM_USER_ID", "")
-            if telegram_id:
-                telegram_config["dmPolicy"] = "allowlist"
-                telegram_config["allowFrom"] = [telegram_id]
-            else:
-                telegram_config["dmPolicy"] = "pairing"
-            config["channels"]["telegram"] = telegram_config
         elif ch_key == "discord":
             discord_config: dict = {
                 "enabled": True,

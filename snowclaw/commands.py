@@ -6,6 +6,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -121,6 +122,8 @@ def cmd_setup(args: argparse.Namespace):
             continue
         console.print(f"\n[bold]{entry['display_name']} credentials:[/bold]")
         for cred in entry["credentials"]:
+            if cred.get("hint"):
+                console.print(f"  [dim]{cred['hint']}[/dim]")
             if cred["secret"]:
                 value = inquirer.secret(
                     message=cred["prompt"],
@@ -453,18 +456,51 @@ def cmd_deploy(args: argparse.Namespace):
             secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
 
     for secret_name, value in secret_map.items():
-        if value:
-            escaped = value.replace("'", "\\'")
+        escaped = value.replace("'", "\\'") if value else ""
+        try:
+            snowflake_rest_execute(
+                account, token,
+                f"CREATE OR REPLACE SECRET {fqn_schema}.{secret_name} "
+                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'",
+                database=db, schema=schema_name,
+            )
+            console.print(f"  [green]✓[/green] Updated {secret_name}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
+            raise
+
+    # Upload openclaw.json to stage (config lives on the volume, not in the image)
+    config_file = root / "openclaw.json"
+    if config_file.is_file():
+        from snowclaw.stage import get_sf_connection, stage_push_file
+
+        console.print()
+        console.print("[bold]Uploading config to stage...[/bold]")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            conn = get_sf_connection(
+                account=account,
+                user=sf_user,
+                token=token,
+                warehouse=warehouse,
+                database=db,
+                schema=schema_name,
+            )
             try:
-                snowflake_rest_execute(
-                    account, token,
-                    f"ALTER SECRET {fqn_schema}.{secret_name} SET SECRET_STRING = '{escaped}'",
-                    database=db, schema=schema_name,
-                )
-                console.print(f"  [green]✓[/green] Updated {secret_name}")
-            except requests.HTTPError as e:
-                console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
-                raise
+                stage_push_file(conn, f"{fqn_schema}.{names['stage']}", str(config_file), "")
+                console.print(f"  [green]✓[/green] Pushed openclaw.json")
+                break
+            except Exception as e:
+                if attempt < max_attempts:
+                    delay = 2 ** attempt
+                    console.print(f"  [yellow]⚠[/yellow] Attempt {attempt}/{max_attempts} failed: {e}")
+                    console.print(f"  Retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    console.print(f"  [red]✗[/red] Failed to push openclaw.json after {max_attempts} attempts: {e}")
+                    sys.exit(1)
+            finally:
+                conn.close()
 
     # Create/alter SPCS service
     console.print()
@@ -668,6 +704,13 @@ def cmd_push(args: argparse.Namespace):
 
     console.print()
     console.print("[green]Push complete.[/green]")
+
+    if "config" in targets:
+        console.print()
+        console.print(
+            "[yellow]Tip:[/yellow] Run [bold]snowclaw restart[/bold] to restart"
+            " the service and apply config changes."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1149,63 @@ def cmd_resume(args: argparse.Namespace):
     console.print("[green]Resume complete.[/green]")
 
 
+def cmd_restart(args: argparse.Namespace):
+    """Restart the SPCS service (suspend then resume) to pick up config changes."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    service_fqn = f"{fqn_schema}.{service_name}"
+
+    console.print(f"[bold]Restarting service {service_name}...[/bold]")
+
+    # Suspend service
+    console.print("  Suspending...")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {service_fqn} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend service: {e}")
+        sys.exit(1)
+
+    # Resume service
+    console.print("  Resuming...")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {service_fqn} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume service: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Restart complete — gateway will reload config on startup.[/green]")
+    console.print(
+        "[yellow]Note:[/yellow] The container may take a minute or two to fully spin up."
+    )
+
+
 def cmd_channel(args: argparse.Namespace):
     """Manage communication channel configurations."""
     sub = getattr(args, "channel_command", None)
@@ -1122,3 +1222,59 @@ def cmd_channel(args: argparse.Namespace):
     handler = dispatch.get(sub)
     if handler:
         handler(args)
+
+
+def cmd_logs(args: argparse.Namespace):
+    """Fetch and display container logs from the SPCS service."""
+    render_banner()
+    root = find_project_root()
+    ctx = load_snowflake_context(root)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+
+    if not account or not token:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+
+    num_lines = getattr(args, "lines", 100)
+    container = getattr(args, "container", "openclaw")
+    instance_id = getattr(args, "instance", "0")
+
+    fqn_service = f"{fqn_schema}.{service_name}"
+    sql = (
+        f"CALL SYSTEM$GET_SERVICE_LOGS("
+        f"'{fqn_service}', '{instance_id}', '{container}', {num_lines})"
+    )
+
+    console.print(
+        f"[bold]Fetching logs:[/bold] {service_name} "
+        f"[dim](container={container}, instance={instance_id}, lines={num_lines})[/dim]"
+    )
+    console.print()
+
+    try:
+        data = snowflake_rest_execute(
+            account, token, sql,
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows and rows[0]:
+            log_text = rows[0][0]
+            if log_text:
+                console.print(log_text)
+            else:
+                console.print("[dim]No log output returned.[/dim]")
+        else:
+            console.print("[dim]No log output returned.[/dim]")
+    except requests.HTTPError as e:
+        console.print(f"[red]Failed to fetch logs:[/red] {e}")
+        sys.exit(1)

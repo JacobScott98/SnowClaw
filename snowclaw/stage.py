@@ -3,9 +3,27 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
-import snowflake.connector
+# Redirect SNOWFLAKE_HOME before importing snowflake.connector so it doesn't
+# find and permission-check ~/.snowflake/connections.toml at import time.
+# SnowClaw passes connection params directly and doesn't use the global config.
+_orig_sf_home = os.environ.get("SNOWFLAKE_HOME")
+_tmp_sf_home = tempfile.mkdtemp()
+os.environ["SNOWFLAKE_HOME"] = _tmp_sf_home
+
+import snowflake.connector  # noqa: E402
+
+# Restore original SNOWFLAKE_HOME
+if _orig_sf_home is None:
+    os.environ.pop("SNOWFLAKE_HOME", None)
+else:
+    os.environ["SNOWFLAKE_HOME"] = _orig_sf_home
+try:
+    os.rmdir(_tmp_sf_home)
+except OSError:
+    pass
 
 
 def get_sf_connection(

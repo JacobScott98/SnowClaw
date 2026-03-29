@@ -119,9 +119,8 @@ def assemble_build_context(root: Path) -> Path:
     config_dir = build_dir / "config"
     config_dir.mkdir()
 
-    openclaw_json = root / "openclaw.json"
-    if openclaw_json.exists():
-        shutil.copy2(openclaw_json, config_dir / "openclaw.json")
+    # openclaw.json is NOT copied into the build context — it's uploaded
+    # directly to the stage by deploy/push instead of being baked into the image.
 
     connections_toml = root / "connections.toml"
     if connections_toml.exists():

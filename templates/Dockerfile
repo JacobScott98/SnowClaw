@@ -1,9 +1,9 @@
 ARG OPENCLAW_VERSION=latest
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
-# Stage config and plugins into a defaults directory so the entrypoint can
-# sync them into the volume-mounted OPENCLAW_HOME at runtime.
-COPY --chown=1000:1000 config/openclaw.json /opt/snowclaw/defaults/openclaw.json
+# Stage default files into a defaults directory so the entrypoint can
+# seed them into the volume-mounted OPENCLAW_HOME on first run.
+# openclaw.json is NOT baked in — it's uploaded to the stage by deploy/push.
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 
@@ -14,6 +14,9 @@ COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections
 RUN SKIP_PODMAN=1 NON_INTERACTIVE=1 \
  sh -c 'curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh'
 
+# Switch to root for system-level installs
+USER root
+
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -23,8 +26,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure the openclaw home dir exists with correct ownership so volume mounts work
-USER root
 RUN mkdir -p /home/node/.openclaw && chown 1000:1000 /home/node/.openclaw
+
 USER node
 
 # Entrypoint wrapper syncs defaults into the volume-mounted home dir

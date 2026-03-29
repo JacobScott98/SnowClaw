@@ -83,6 +83,7 @@ CHANNEL_REGISTRY: dict[str, dict] = {
         ],
         "credentials": [
             {"key": "TELEGRAM_BOT_TOKEN", "env_var": "TELEGRAM_BOT_TOKEN", "label": "Bot token", "prompt": "Telegram bot token (from @BotFather):", "secret": True},
+            {"key": "TELEGRAM_USER_ID", "env_var": "TELEGRAM_USER_ID", "label": "Telegram user ID", "prompt": "Your Telegram user ID:", "secret": False, "inline": True, "hint": "Search for @userinfobot on Telegram and tap Start to get your numeric user ID."},
         ],
     },
     "discord": {

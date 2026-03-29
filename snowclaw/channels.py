@@ -33,6 +33,8 @@ class ChannelField:
     config_key: str  # key in openclaw.json accounts dict, e.g. "botToken"
     prompt: str  # prompt text for interactive input
     secret: bool = True  # whether to mask input
+    inline: bool = False  # True = store literal value in openclaw.json, skip .env
+    hint: str = ""  # optional hint printed before the prompt
 
 
 @dataclass
@@ -44,6 +46,7 @@ class ChannelType:
     fields: list[ChannelField]
     extra_config: dict = field(default_factory=dict)  # e.g. {"mode": "socket"}
     network_rules: list[NetworkRule] = field(default_factory=list)
+    uses_accounts: bool = True  # False = credentials go at channel top level (e.g. Telegram)
 
 
 CHANNEL_TYPES: dict[str, ChannelType] = {
@@ -81,10 +84,21 @@ CHANNEL_TYPES: dict[str, ChannelType] = {
                 config_key="botToken",
                 prompt="Telegram bot token (from @BotFather):",
             ),
+            ChannelField(
+                name="user_id",
+                env_var_template="TELEGRAM_USER_ID",
+                config_key="allowFrom",
+                prompt="Your Telegram user ID:",
+                secret=False,
+                inline=True,
+                hint="Search for @userinfobot on Telegram and tap Start to get your numeric user ID.",
+            ),
         ],
+        extra_config={"dmPolicy": "allowlist"},
         network_rules=[
             NetworkRule("api.telegram.org", 443, "Telegram Bot API"),
         ],
+        uses_accounts=False,
     ),
     "discord": ChannelType(
         name="discord",
@@ -145,15 +159,24 @@ def add_channel_to_config(
     if "channels" not in config:
         config["channels"] = {}
 
+    ct = CHANNEL_TYPES.get(channel_type)
+
     channel_entry: dict = {"enabled": True}
     if extra_config:
         channel_entry.update(extra_config)
 
-    # Merge with existing accounts if channel type already has entries
-    existing = config["channels"].get(channel_type, {})
-    existing_accounts = existing.get("accounts", {})
-    existing_accounts[account_name] = credentials
-    channel_entry["accounts"] = existing_accounts
+    if ct and not ct.uses_accounts:
+        # Flat config — credentials at channel top level (e.g. Telegram)
+        channel_entry.update(credentials)
+        # allowFrom must be a list of user IDs
+        if "allowFrom" in channel_entry and isinstance(channel_entry["allowFrom"], str):
+            channel_entry["allowFrom"] = [channel_entry["allowFrom"]]
+    else:
+        # Accounts-based config (e.g. Slack, Discord)
+        existing = config["channels"].get(channel_type, {})
+        existing_accounts = existing.get("accounts", {})
+        existing_accounts[account_name] = credentials
+        channel_entry["accounts"] = existing_accounts
 
     config["channels"][channel_type] = channel_entry
     save_openclaw_config(root, config)
@@ -182,10 +205,17 @@ def update_channel_credentials(
     channels = config.get("channels", {})
     if channel_type not in channels:
         return False
-    accounts = channels[channel_type].get("accounts", {})
-    if account_name not in accounts:
-        return False
-    accounts[account_name].update(credentials)
+
+    ct = CHANNEL_TYPES.get(channel_type)
+    if ct and not ct.uses_accounts:
+        # Flat config — update credentials at channel top level
+        channels[channel_type].update(credentials)
+    else:
+        accounts = channels[channel_type].get("accounts", {})
+        if account_name not in accounts:
+            return False
+        accounts[account_name].update(credentials)
+
     save_openclaw_config(root, config)
     return True
 
@@ -243,7 +273,7 @@ def get_env_var_keys_for_channel(channel_type: str) -> list[str]:
     ct = CHANNEL_TYPES.get(channel_type)
     if not ct:
         return []
-    return [f.env_var_template for f in ct.fields]
+    return [f.env_var_template for f in ct.fields if not f.inline]
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +315,10 @@ def format_channels_table(channels: dict[str, dict]) -> Table:
         mode = ch_config.get("mode", "")
         details = f"mode={mode}" if mode else ""
 
-        if not accounts:
+        ct = CHANNEL_TYPES.get(ch_type)
+        if ct and not ct.uses_accounts:
+            table.add_row(ch_type, "-", enabled, details)
+        elif not accounts:
             table.add_row(ch_type, "-", enabled, details)
         else:
             for acct_name in accounts:
@@ -336,39 +369,50 @@ def channel_add():
 
     # Check if already configured
     if channel_type in channels:
-        existing_accounts = list(channels[channel_type].get("accounts", {}).keys())
-        if existing_accounts:
+        if ct.uses_accounts:
+            existing_accounts = list(channels[channel_type].get("accounts", {}).keys())
+            if existing_accounts:
+                console.print(
+                    f"[yellow]{ct.display_name} already has account(s): "
+                    f"{', '.join(existing_accounts)}[/yellow]"
+                )
+                add_another = inquirer.confirm(
+                    message="Add another account?",
+                    default=False,
+                ).execute()
+                if not add_another:
+                    console.print("[dim]Aborted.[/dim]")
+                    return
+        else:
             console.print(
-                f"[yellow]{ct.display_name} already has account(s): "
-                f"{', '.join(existing_accounts)}[/yellow]"
-            )
-            add_another = inquirer.confirm(
-                message="Add another account?",
-                default=False,
-            ).execute()
-            if not add_another:
-                console.print("[dim]Aborted.[/dim]")
-                return
-
-    # Step 2: Account name
-    account_name = inquirer.text(
-        message="Account name:",
-        default="default",
-        validate=lambda v: len(v.strip()) > 0,
-        invalid_message="Account name is required.",
-    ).execute().strip()
-
-    # Check for duplicate account name
-    if channel_type in channels:
-        existing_accounts = channels[channel_type].get("accounts", {})
-        if account_name in existing_accounts:
-            console.print(
-                f"[red]Account '{account_name}' already exists for {ct.display_name}.[/red]"
+                f"[yellow]{ct.display_name} is already configured.[/yellow]"
             )
             console.print(
                 f"Use [cyan]snowclaw channel edit {channel_type}[/cyan] to modify it."
             )
             return
+
+    # Step 2: Account name (only for account-based channels)
+    account_name = "default"
+    if ct.uses_accounts:
+        account_name = inquirer.text(
+            message="Account name:",
+            default="default",
+            validate=lambda v: len(v.strip()) > 0,
+            invalid_message="Account name is required.",
+        ).execute().strip()
+
+        # Check for duplicate account name
+        if channel_type in channels:
+            existing_accounts = channels[channel_type].get("accounts", {})
+            if account_name in existing_accounts:
+                console.print(
+                    f"[red]Account '{account_name}' already exists for {ct.display_name}.[/red]"
+                )
+                console.print(
+                    f"Use [cyan]snowclaw channel edit {channel_type}[/cyan] to modify it."
+                )
+                return
 
     # Step 3: Collect credentials
     console.print()
@@ -377,6 +421,8 @@ def channel_add():
     config_credentials: dict[str, str] = {}
 
     for fld in ct.fields:
+        if fld.hint:
+            console.print(f"  [dim]{fld.hint}[/dim]")
         if fld.secret:
             value = inquirer.secret(
                 message=fld.prompt,
@@ -390,8 +436,11 @@ def channel_add():
                 invalid_message=f"{fld.name} is required.",
             ).execute().strip()
 
-        env_vars[fld.env_var_template] = value
-        config_credentials[fld.config_key] = f"${{{fld.env_var_template}}}"
+        if fld.inline:
+            config_credentials[fld.config_key] = value
+        else:
+            env_vars[fld.env_var_template] = value
+            config_credentials[fld.config_key] = f"${{{fld.env_var_template}}}"
 
     # Step 4: Save to openclaw.json and .env
     add_env_vars(root, env_vars)
@@ -439,14 +488,14 @@ def channel_add():
 
     # Step 6: Summary
     console.print()
+    account_line = f"  Account:  [cyan]{account_name}[/cyan]\n" if ct.uses_accounts else ""
     console.print(Panel(
         f"[bold]{ct.display_name} channel configured![/bold]\n\n"
-        f"  Account:  [cyan]{account_name}[/cyan]\n"
+        + account_line
         + "".join(
             f"  {fld.config_key}:  [dim]${{{fld.env_var_template}}}[/dim]\n"
             for fld in ct.fields
-        )
-        + "\nRun [cyan]snowclaw dev[/cyan] to test locally.",
+        ),
         title="Channel Added",
         border_style="green",
         expand=False,
@@ -522,19 +571,21 @@ def channel_edit(name: str | None):
         return
 
     ch_config = channels[name]
-    accounts = ch_config.get("accounts", {})
 
-    # Pick account to edit
-    if len(accounts) == 1:
-        account_name = next(iter(accounts))
-    elif len(accounts) > 1:
-        account_name = inquirer.select(
-            message="Which account to edit?",
-            choices=list(accounts.keys()),
-        ).execute()
-    else:
-        console.print(f"[yellow]No accounts configured for {ct.display_name}.[/yellow]")
-        return
+    # Pick account to edit (flat channels skip this)
+    account_name = "default"
+    if ct.uses_accounts:
+        accounts = ch_config.get("accounts", {})
+        if len(accounts) == 1:
+            account_name = next(iter(accounts))
+        elif len(accounts) > 1:
+            account_name = inquirer.select(
+                message="Which account to edit?",
+                choices=list(accounts.keys()),
+            ).execute()
+        else:
+            console.print(f"[yellow]No accounts configured for {ct.display_name}.[/yellow]")
+            return
 
     # Load current .env values
     env = load_dotenv(root / ".env")
@@ -548,23 +599,34 @@ def channel_edit(name: str | None):
     config_credentials: dict[str, str] = {}
     changed = False
 
+    ch_config = channels[name]
     for fld in ct.fields:
-        current_val = env.get(fld.env_var_template, "")
-        masked = mask_value(current_val) if current_val else "(not set)"
-
-        new_val = inquirer.secret(
-            message=f"{fld.prompt} [current: {masked}]",
-        ).execute().strip()
-
-        if new_val:
-            new_env_vars[fld.env_var_template] = new_val
-            changed = True
+        if fld.inline:
+            # Inline fields are stored directly in openclaw.json
+            current_val = ch_config.get(fld.config_key, "")
+            if isinstance(current_val, list):
+                current_val = current_val[0] if current_val else ""
+            display = current_val if current_val else "(not set)"
+            new_val = inquirer.text(
+                message=f"{fld.prompt} [current: {display}]",
+            ).execute().strip()
+            value = new_val if new_val else current_val
+            if new_val:
+                changed = True
+            config_credentials[fld.config_key] = value
         else:
-            # Keep existing value
-            if current_val:
-                new_env_vars[fld.env_var_template] = current_val
-
-        config_credentials[fld.config_key] = f"${{{fld.env_var_template}}}"
+            current_val = env.get(fld.env_var_template, "")
+            masked = mask_value(current_val) if current_val else "(not set)"
+            new_val = inquirer.secret(
+                message=f"{fld.prompt} [current: {masked}]",
+            ).execute().strip()
+            if new_val:
+                new_env_vars[fld.env_var_template] = new_val
+                changed = True
+            else:
+                if current_val:
+                    new_env_vars[fld.env_var_template] = current_val
+            config_credentials[fld.config_key] = f"${{{fld.env_var_template}}}"
 
     if not changed:
         console.print("[dim]No changes made.[/dim]")

@@ -10,9 +10,11 @@ from snowclaw.commands import (
     cmd_channel,
     cmd_deploy,
     cmd_dev,
+    cmd_logs,
     cmd_network,
     cmd_pull,
     cmd_push,
+    cmd_restart,
     cmd_resume,
     cmd_setup,
     cmd_status,
@@ -38,7 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Show deployed service status, endpoints, and compute pool")
     sub.add_parser("suspend", help="Suspend the SPCS service and compute pool")
     sub.add_parser("resume", help="Resume the SPCS compute pool and service")
+    sub.add_parser("restart", help="Restart the SPCS service to pick up config changes")
     sub.add_parser("update", help="Update the OpenClaw version")
+
+    logs_parser = sub.add_parser("logs", help="Show container logs from the SPCS service")
+    logs_parser.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines (default: 100)")
+    logs_parser.add_argument("--container", default="openclaw", help="Container name (default: openclaw)")
+    logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
 
     pull_parser = sub.add_parser("pull", help="Pull skills, workspace, and config from SPCS stage")
     pull_group = pull_parser.add_mutually_exclusive_group()
@@ -100,11 +108,13 @@ def main():
         "status": cmd_status,
         "suspend": cmd_suspend,
         "resume": cmd_resume,
+        "restart": cmd_restart,
         "update": cmd_update,
         "pull": cmd_pull,
         "push": cmd_push,
         "network": cmd_network,
         "channel": cmd_channel,
+        "logs": cmd_logs,
     }
 
     handler = commands.get(args.command or "setup")
