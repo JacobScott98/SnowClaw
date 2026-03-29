@@ -107,13 +107,15 @@ def write_openclaw_config(root: Path, settings: dict):
                 discord_config["guilds"] = {server_id: guild_config}
             config["channels"]["discord"] = discord_config
 
+    # Restrict agent filesystem access to the workspace directory
+    config.setdefault("tools", {})
+    config["tools"]["fs"] = {"workspaceOnly": True}
+
     # Brave Search tool (optional)
     if "brave_search" in settings.get("tools", []):
-        config["tools"] = {
-            "web": {
-                "search": {
-                    "provider": "brave",
-                }
+        config["tools"]["web"] = {
+            "search": {
+                "provider": "brave",
             }
         }
 
