@@ -18,6 +18,8 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWFLAKE_ACCOUNT={settings['account']}",
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
+        f"SNOWCLAW_ADMIN_ROLE={settings.get('admin_role', 'SYSADMIN')}",
+        f"SNOWCLAW_SERVICE_ROLE={settings.get('service_role', 'SNOWCLAW_SERVICE_ROLE')}",
     ]
     # Write env vars for all enabled channels
     for ch_key in settings.get("channels", []):
@@ -135,7 +137,7 @@ user = "{settings['sf_user']}"
 authenticator = "PROGRAMMATIC_ACCESS_TOKEN"
 token = "{settings['pat']}"
 warehouse = "{settings.get('warehouse', 'COMPUTE_WH')}"
-role = "{settings.get('role', 'SYSADMIN')}"
+role = "{settings.get('admin_role', 'SYSADMIN')}"
 """
     conn_path = root / "connections.toml"
     conn_path.write_text(content)

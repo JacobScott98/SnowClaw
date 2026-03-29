@@ -159,7 +159,23 @@ def cmd_setup(args: argparse.Namespace):
             tool_credentials[cred["env_var"]] = value.strip()
 
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
-    role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
+
+    console.print()
+    console.print(Panel(
+        "[bold]SnowClaw uses two Snowflake roles:[/bold]\n\n"
+        "  [cyan]Admin role[/cyan] — Used by the CLI for infrastructure management\n"
+        "  (creating services, compute pools, network rules, secrets).\n\n"
+        "  [cyan]Service role[/cyan] — Used by OpenClaw at runtime inside the container.\n"
+        "  Should have minimal permissions: query execution, Cortex access, stage reads.\n"
+        "  This role must already exist in your Snowflake account.",
+        title="Role Configuration",
+        border_style="cyan",
+        expand=False,
+    ))
+
+    admin_role = inquirer.text(message="Admin role:", default="SYSADMIN").execute()
+    service_role = inquirer.text(message="Service role:", default="SNOWCLAW_SERVICE_ROLE").execute()
+
     database = inquirer.text(
         message="Snowflake database name:",
         default="snowclaw_db",
@@ -179,7 +195,8 @@ def cmd_setup(args: argparse.Namespace):
         "pat": pat.strip(),
         "channels": channels,
         "warehouse": warehouse.strip(),
-        "role": role.strip(),
+        "admin_role": admin_role.strip(),
+        "service_role": service_role.strip(),
         "database": database,
         "schema": schema,
         **channel_creds,
@@ -193,6 +210,8 @@ def cmd_setup(args: argparse.Namespace):
         "created": datetime.now(timezone.utc).isoformat(),
         "database": database,
         "schema": schema,
+        "admin_role": admin_role.strip(),
+        "service_role": service_role.strip(),
         "openclaw_version": "latest",
         "tools": tools,
     }
