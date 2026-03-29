@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from InquirerPy import inquirer
 from rich.panel import Panel
 
 from snowclaw import __version__
-from snowclaw.config import write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.config import CORTEX_MODELS, write_connections_toml, write_dotenv, write_openclaw_config
 from snowclaw.channels import (
     channel_add,
     channel_edit,
@@ -161,6 +162,15 @@ def cmd_setup(args: argparse.Namespace):
                 value = inquirer.text(message=cred["prompt"]).execute()
             tool_credentials[cred["env_var"]] = value.strip()
 
+    # --- Default model ---
+    default_model = inquirer.select(
+        message="Default model for your agent:",
+        choices=[
+            {"name": f"{m['name']} (Recommended)" if i == 0 else m["name"], "value": m["id"]}
+            for i, m in enumerate(CORTEX_MODELS)
+        ],
+    ).execute()
+
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
     role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
     database = inquirer.text(
@@ -186,6 +196,7 @@ def cmd_setup(args: argparse.Namespace):
         "database": database,
         "schema": schema,
         **channel_creds,
+        "default_model": default_model,
         "tools": tools,
         "tool_credentials": tool_credentials,
     }
@@ -1222,6 +1233,78 @@ def cmd_channel(args: argparse.Namespace):
     handler = dispatch.get(sub)
     if handler:
         handler(args)
+
+
+def cmd_model(args: argparse.Namespace):
+    """View or change the default agent model."""
+    sub = getattr(args, "model_command", None)
+    if not sub:
+        model_show()
+        return
+
+    dispatch = {
+        "list": lambda a: model_list(),
+        "set": lambda a: model_set(),
+    }
+    handler = dispatch.get(sub)
+    if handler:
+        handler(args)
+
+
+def model_show():
+    """Show the current default model."""
+    root = find_project_root()
+    config_path = root / "openclaw.json"
+    if not config_path.exists():
+        console.print("[red]No openclaw.json found. Run snowclaw setup first.[/red]")
+        sys.exit(1)
+
+    config = json.loads(config_path.read_text())
+    current = config.get("agents", {}).get("defaults", {}).get("model", "not set")
+    console.print(f"Current default model: [bold]{current}[/bold]")
+
+
+def model_list():
+    """List available Cortex models and highlight the current default."""
+    root = find_project_root()
+    config_path = root / "openclaw.json"
+    current = ""
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+        current = config.get("agents", {}).get("defaults", {}).get("model", "")
+
+    console.print("[bold]Available Cortex models:[/bold]\n")
+    for m in CORTEX_MODELS:
+        prefixed = f"cortex:{m['id']}"
+        marker = " [green]← current[/green]" if prefixed == current else ""
+        console.print(f"  {m['name']} [dim]({m['id']})[/dim]{marker}")
+    console.print()
+
+
+def model_set():
+    """Interactively change the default model in openclaw.json."""
+    root = find_project_root()
+    config_path = root / "openclaw.json"
+    if not config_path.exists():
+        console.print("[red]No openclaw.json found. Run snowclaw setup first.[/red]")
+        sys.exit(1)
+
+    config = json.loads(config_path.read_text())
+    current = config.get("agents", {}).get("defaults", {}).get("model", "")
+
+    selected = inquirer.select(
+        message="Select default model:",
+        choices=[
+            {"name": m["name"], "value": m["id"]}
+            for m in CORTEX_MODELS
+        ],
+        default=current.removeprefix("cortex:") if current.startswith("cortex:") else None,
+    ).execute()
+
+    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"cortex:{selected}"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    model_name = next((m["name"] for m in CORTEX_MODELS if m["id"] == selected), selected)
+    console.print(f"  [green]✓[/green] Default model set to [bold]{model_name}[/bold]")
 
 
 def cmd_logs(args: argparse.Namespace):
