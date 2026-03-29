@@ -1,9 +1,9 @@
 ARG OPENCLAW_VERSION=latest
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
-# Stage config and plugins into a defaults directory so the entrypoint can
-# sync them into the volume-mounted OPENCLAW_HOME at runtime.
-COPY --chown=1000:1000 config/openclaw.json /opt/snowclaw/defaults/openclaw.json
+# Stage default files into a defaults directory so the entrypoint can
+# seed them into the volume-mounted OPENCLAW_HOME on first run.
+# openclaw.json is NOT baked in — it's uploaded to the stage by deploy/push.
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 

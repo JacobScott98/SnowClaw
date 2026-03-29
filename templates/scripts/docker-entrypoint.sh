@@ -7,8 +7,8 @@ DEFAULTS="/opt/snowclaw/defaults"
 # Ensure the volume-mounted home dir exists and is writable
 mkdir -p "$OPENCLAW_HOME"
 
-# Always overwrite openclaw.json (config changes must propagate on redeploy)
-cp -f "$DEFAULTS/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
+# openclaw.json lives on the stage-backed volume — managed by deploy/push,
+# not baked into the image. No copy needed here.
 
 # Skills: only seed on first run (when dir doesn't exist)
 if [ ! -d "$OPENCLAW_HOME/skills" ]; then
