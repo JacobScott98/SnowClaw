@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from config import get_cortex_base_url
+from masking import SecretMasker
 from transforms import transform_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Cortex Proxy", lifespan=lifespan)
+_masker = SecretMasker()
 
 
 @app.post("/v1/chat/completions", response_model=None)
@@ -43,7 +45,8 @@ async def chat_completions(request: Request) -> Response:
     body = await request.json()
     model = body.get("model", "unknown")
 
-    # Transform the request
+    # Mask secrets, then transform the request
+    body = _masker.mask_request(body)
     transformed = transform_request(body)
     logger.info("Proxying request for model=%s", model)
 
