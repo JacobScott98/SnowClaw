@@ -13,6 +13,7 @@ from snowclaw.network import (
     TOOL_REGISTRY,
     build_network_rule_sql,
     get_channel_secrets,
+    get_custom_secrets,
     load_network_rules,
 )
 from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
@@ -183,6 +184,17 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    # Build custom secrets YAML block from CUSTOM_ vars in .env
+    env_file = root / ".env"
+    custom_secrets = get_custom_secrets(prefix, env_file)
+    custom_secrets_yaml = ""
+    for sec in custom_secrets:
+        custom_secrets_yaml += (
+            f"        - snowflakeSecret: {fqn_schema}.{sec['secret_name']}\n"
+            f"          secretKeyRef: secret_string\n"
+            f"          envVarName: {sec['env_var']}\n"
+        )
+
     # Build SNOWCLAW_MASK_VARS from secret credentials that are configured
     # (reads .env to check which vars actually have values)
     mask_var_names = ["SNOWFLAKE_TOKEN"]
@@ -194,14 +206,18 @@ def assemble_build_context(root: Path) -> Path:
 
     # Filter to only vars that have values in .env
     env_values: dict[str, str] = {}
-    env_file = root / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 env_values[k.strip()] = v.strip()
-    mask_vars_value = ",".join(v for v in mask_var_names if env_values.get(v))
+    mask_vars_list = [v for v in mask_var_names if env_values.get(v)]
+    # Add CUSTOM_ var names to mask list
+    for sec in custom_secrets:
+        if sec["env_var"] not in mask_vars_list:
+            mask_vars_list.append(sec["env_var"])
+    mask_vars_value = ",".join(mask_vars_list)
 
     account = marker.get("account", "")
 
@@ -215,6 +231,8 @@ def assemble_build_context(root: Path) -> Path:
             if name == "service.yaml":
                 content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
                 content = content.replace("__CHANNEL_SECRETS_PROXY__", channel_secrets_yaml)
+                content = content.replace("__CUSTOM_SECRETS__", custom_secrets_yaml)
+                content = content.replace("__CUSTOM_SECRETS_PROXY__", custom_secrets_yaml)
                 content = content.replace("__SNOWCLAW_MASK_VARS__", mask_vars_value)
                 content = content.replace("__SNOWCLAW_ACCOUNT__", account)
             (spcs_dir / name).write_text(content)

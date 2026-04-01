@@ -134,6 +134,29 @@ def get_channel_secrets(prefix: str, channels: list[str]) -> list[dict]:
     return result
 
 
+def get_custom_secrets(prefix: str, env_path: Path) -> list[dict]:
+    """Get Snowflake secret mappings for CUSTOM_ prefixed vars in .env.
+
+    Returns list of dicts with keys: secret_name, env_var.
+    Same format as get_channel_secrets().
+    """
+    result = []
+    if not env_path.exists():
+        return result
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("CUSTOM_") and value.strip():
+            result.append({
+                "secret_name": f"{prefix}_{key.lower()}",
+                "env_var": key,
+            })
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Tool registry — curated developer tools that need credentials + network rules
 # ---------------------------------------------------------------------------
