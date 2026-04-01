@@ -73,6 +73,26 @@ def scaffold_user_files(target: Path, force: bool = False) -> tuple[list[str], l
         (workspace / ".gitkeep").touch()
         copied.append("workspace/")
 
+    # Create build-hooks/ directory with README
+    build_hooks = target / "build-hooks"
+    if not build_hooks.exists():
+        build_hooks.mkdir()
+        (build_hooks / ".gitkeep").touch()
+        (build_hooks / "README.md").write_text(
+            "# Build Hooks\n"
+            "\n"
+            "Place .sh scripts here to customize your Docker image.\n"
+            "Scripts run alphabetically during `snowclaw build` as root.\n"
+            "\n"
+            "Examples:\n"
+            "  00-install-ffmpeg.sh:  apt-get update && apt-get install -y ffmpeg\n"
+            "  01-install-python.sh:  pip install pandas numpy\n"
+            "\n"
+            "Note: These run at build time, not runtime. Environment variables\n"
+            "and secrets are NOT available. Use for package installs and static config.\n"
+        )
+        copied.append("build-hooks/")
+
     return copied, skipped
 
 
@@ -104,6 +124,32 @@ def assemble_build_context(root: Path) -> Path:
         f"ARG OPENCLAW_VERSION={openclaw_version}",
         dockerfile_content,
     )
+
+    # Inject build hooks layer if user has .sh scripts in build-hooks/
+    build_hooks_src = root / "build-hooks"
+    has_hooks = (
+        build_hooks_src.is_dir()
+        and any(build_hooks_src.glob("*.sh"))
+    )
+    if has_hooks:
+        shutil.copytree(
+            build_hooks_src,
+            build_dir / "build-hooks",
+            ignore=shutil.ignore_patterns(".gitkeep", "README.md"),
+        )
+        hook_layer = (
+            "\n# User build hooks\n"
+            "COPY build-hooks/ /tmp/build-hooks/\n"
+            'RUN for script in /tmp/build-hooks/*.sh; do [ -f "$script" ]'
+            ' && chmod +x "$script" && echo "Running $script..."'
+            ' && "$script"; done && rm -rf /tmp/build-hooks\n'
+        )
+        # Insert after the GitHub CLI install block, before mkdir -p /home/node/.openclaw
+        dockerfile_content = dockerfile_content.replace(
+            "# Ensure the openclaw home dir",
+            hook_layer + "\n# Ensure the openclaw home dir",
+        )
+
     (build_dir / "Dockerfile").write_text(dockerfile_content)
 
     # Generate docker-compose.yml
