@@ -108,11 +108,11 @@ def write_openclaw_config(root: Path, settings: dict):
             config["channels"]["discord"] = discord_config
 
     # Brave Search tool (optional)
-    if "brave_search" in settings.get("tools", []):
-        config["tools"] = {
-            "web": {
-                "search": {
-                    "provider": "brave",
+    if 'brave_search' in settings.get('tools', []):
+        config['tools'] = {
+            'web': {
+                'search': {
+                    'provider': 'brave',
                 }
             }
         }
