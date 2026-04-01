@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from snowclaw.network import CHANNEL_REGISTRY
+from snowclaw.network import CHANNEL_REGISTRY, TOOL_REGISTRY
 from snowclaw.utils import console
 
 
@@ -37,6 +37,37 @@ def write_dotenv(root: Path, settings: dict):
         if value:
             lines.append(f"{env_var}={value}")
 
+    # Cortex proxy base URL
+    lines.append(
+        f"CORTEX_BASE_URL=https://{settings['account']}.snowflakecomputing.com/api/v2/cortex/v1"
+    )
+
+    # Auto-populate SNOWCLAW_MASK_VARS from all configured secret credentials
+    # Collect all env var names marked secret across registries
+    mask_candidates = ["SNOWFLAKE_TOKEN"]
+    for registry in (CHANNEL_REGISTRY, TOOL_REGISTRY):
+        for entry in registry.values():
+            for cred in entry.get("credentials", []):
+                if cred.get("secret") and cred["env_var"] not in mask_candidates:
+                    mask_candidates.append(cred["env_var"])
+
+    # Build a set of env vars that actually have values in this .env
+    configured_vars = {settings.get("pat") and "SNOWFLAKE_TOKEN"}  # always if pat set
+    for ch_key in settings.get("channels", []):
+        entry = CHANNEL_REGISTRY.get(ch_key)
+        if not entry:
+            continue
+        for cred in entry["credentials"]:
+            if cred.get("secret") and settings.get(cred["env_var"]):
+                configured_vars.add(cred["env_var"])
+    for env_var, value in tool_credentials.items():
+        if value:
+            configured_vars.add(env_var)
+
+    mask_vars = [v for v in mask_candidates if v in configured_vars]
+    if mask_vars:
+        lines.append(f"SNOWCLAW_MASK_VARS={','.join(mask_vars)}")
+
     (root / ".env").write_text("\n".join(lines) + "\n")
     console.print(f"  [green]✓[/green] Wrote {root / '.env'}")
 
@@ -59,7 +90,7 @@ def write_openclaw_config(root: Path, settings: dict):
 
     # Cortex provider (always included)
     config["models"]["providers"]["cortex"] = {
-        "baseUrl": f"https://{settings['account']}.snowflakecomputing.com/api/v2/cortex/v1",
+        "baseUrl": "http://localhost:8080/v1",
         "apiKey": "${SNOWFLAKE_TOKEN}",
         "api": "openai-completions",
         "models": [

@@ -8,16 +8,30 @@ import shutil
 import sys
 from pathlib import Path
 
-from snowclaw.network import build_network_rule_sql, get_channel_secrets, load_network_rules
+from snowclaw.network import (
+    CHANNEL_REGISTRY,
+    TOOL_REGISTRY,
+    build_network_rule_sql,
+    get_channel_secrets,
+    load_network_rules,
+)
 from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
 
 
 DOCKER_COMPOSE_TEMPLATE = """\
 services:
+  cortex-proxy:
+    build: ./proxy
+    network_mode: host
+    env_file: ../../.env
+    restart: unless-stopped
+
   openclaw:
     build: .
     network_mode: host
     env_file: ../../.env
+    depends_on:
+      - cortex-proxy
     volumes:
       - openclaw-data:/home/node/.openclaw
     restart: unless-stopped
@@ -139,6 +153,12 @@ def assemble_build_context(root: Path) -> Path:
     if plugins_src.is_dir():
         shutil.copytree(plugins_src, build_dir / "plugins")
 
+    # Copy proxy/ from CLI repo into build context
+    cli_root = templates.parent
+    proxy_src = cli_root / "proxy"
+    if proxy_src.is_dir():
+        shutil.copytree(proxy_src, build_dir / "proxy")
+
     # Copy and prefix-substitute SPCS files
     spcs_dir = build_dir / "spcs"
     spcs_dir.mkdir()
@@ -163,6 +183,28 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    # Build SNOWCLAW_MASK_VARS from secret credentials that are configured
+    # (reads .env to check which vars actually have values)
+    mask_var_names = ["SNOWFLAKE_TOKEN"]
+    for registry in (CHANNEL_REGISTRY, TOOL_REGISTRY):
+        for entry in registry.values():
+            for cred in entry.get("credentials", []):
+                if cred.get("secret") and cred["env_var"] not in mask_var_names:
+                    mask_var_names.append(cred["env_var"])
+
+    # Filter to only vars that have values in .env
+    env_values: dict[str, str] = {}
+    env_file = root / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                env_values[k.strip()] = v.strip()
+    mask_vars_value = ",".join(v for v in mask_var_names if env_values.get(v))
+
+    account = marker.get("account", "")
+
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
         if src.exists():
@@ -172,6 +214,9 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             if name == "service.yaml":
                 content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
+                content = content.replace("__CHANNEL_SECRETS_PROXY__", channel_secrets_yaml)
+                content = content.replace("__SNOWCLAW_MASK_VARS__", mask_vars_value)
+                content = content.replace("__SNOWCLAW_ACCOUNT__", account)
             (spcs_dir / name).write_text(content)
 
     # Generate network-rules.sql from saved rules
