@@ -2,11 +2,11 @@
 
 ## Overview
 
-SnowClaw is an open-source bootstrapper for running OpenClaw on Snowflake Container Services (SPCS), preconfigured with Snowflake-native LLM providers, Slack integration, and Cortex Code interop. It layers deployment config, custom plugins, and SPCS infrastructure on top of upstream OpenClaw — no fork required.
+SnowClaw is an open-source bootstrapper for running OpenClaw on Snowflake Container Services (SPCS), preconfigured with Snowflake Cortex LLMs, multi-channel messaging (Slack, Telegram, Discord), and a Cortex proxy sidecar for API compatibility. It layers deployment config, custom plugins, and SPCS infrastructure on top of upstream OpenClaw — no fork required.
 
 ## Repo Structure
 
-The repo is a **scaffolding tool** — it contains only the CLI and templates. Users run `snowclaw setup` in a fresh directory to get a self-contained project.
+The repo is a **scaffolding tool** — it contains only the CLI, templates, and proxy. Users run `snowclaw setup` in a fresh directory to get a self-contained project.
 
 ```
 snowclaw/                    # CLI repo (installed via pipx)
@@ -14,26 +14,39 @@ snowclaw/                    # CLI repo (installed via pipx)
     cli.py                   # Entry point and argument parser
     commands.py              # CLI command implementations
     config.py                # Config file writers (.env, openclaw.json, connections.toml)
-    network.py               # Network rule management (detect, diff, apply, persist)
+    channels.py              # Channel management (Slack, Telegram, Discord)
+    network.py               # Network rule management + channel/tool registries
     scaffold.py              # User file scaffolding and build context assembly
     snowflake.py             # Snowflake object creation via REST API
-    stage.py                 # SPCS stage push/pull
+    stage.py                 # SPCS stage push/pull (snowflake-connector-python)
     utils.py                 # Naming, project discovery, REST API, shared utilities
-  pyproject.toml             # Python packaging (hatchling), entry point, deps
-  install.sh                 # Curl-able installer — clones repo, pipx install -e
+  proxy/                     # Cortex proxy sidecar (separate Docker image)
+    app.py                   # FastAPI server — POST /v1/chat/completions
+    config.py                # Proxy configuration (base URL, port, model detection)
+    masking.py               # SecretMasker — scrubs secrets from LLM traffic
+    transforms.py            # Request transforms (parallel tool calls, max_tokens, etc.)
+    Dockerfile               # python:3.12-slim based
+    requirements.txt
   templates/                 # Used at build time, NOT copied to user projects
-    Dockerfile               # FROM openclaw, layers config + plugins + Cortex Code
+    Dockerfile               # FROM openclaw, layers config + plugins + Cortex Code + gh CLI
     .gitignore               # Copied to user project at setup time
     scripts/
-      docker-entrypoint.sh   # Syncs /opt/snowclaw/defaults/ into volume at startup
+      docker-entrypoint.sh   # Config lockdown (root), privilege drop to node, startup
     spcs/
-      service.yaml           # SPCS service spec (container, endpoints, volumes)
+      service.yaml           # SPCS service spec (two containers, dynamic secrets)
       image-repo.sql         # SQL: database, schema, image repo, stage, secrets, compute pool
     plugins/
       cortex-tools/          # OpenClaw plugin: SQL queries + Cortex functions (stub)
       cortex-code/           # OpenClaw plugin: MCP bridge for Cortex Code (stub)
     skills/
       cortex-code/           # Cortex Code skill definition (copied to user project)
+  tests/                     # Unit tests (pytest)
+    test_build_hooks.py      # Build hooks scaffolding & assembly
+    test_custom_secrets.py   # Custom secrets handling
+  docs/
+    cortex-compatibility-matrix.md
+  pyproject.toml             # Python packaging (hatchling), entry point, deps
+  install.sh                 # Curl-able installer — clones repo, pipx install -e
 ```
 
 ### User project layout (created by `snowclaw setup`)
@@ -41,13 +54,14 @@ snowclaw/                    # CLI repo (installed via pipx)
 ```
 my-openclaw/                 # User's project directory
   .snowclaw/                 # Marker directory
-    config.json              # Marker (JSON: version, timestamp, prefix, openclaw_version)
+    config.json              # Marker (JSON: version, timestamp, prefix, openclaw_version, tools)
     network-rules.json       # Approved network rules for external access
     build/                   # Generated at dev/deploy time, gitignored
-  .env                       # Generated — actual secrets (gitignored)
+  .env                       # Generated — actual secrets + CUSTOM_ user secrets (gitignored)
   .gitignore                 # Copied from templates/
-  openclaw.json              # Generated by CLI — providers, channels, agents
+  openclaw.json              # Generated by CLI — providers, channels, agents, tool policy
   connections.toml           # Generated by CLI — Snowflake connection (gitignored)
+  build-hooks/               # User-editable build scripts (*.sh, run alphabetically at build time)
   skills/                    # User-editable skills (copied from templates/)
     cortex-code/
   workspace/                 # Markdown knowledge base (starts empty)
@@ -57,18 +71,19 @@ my-openclaw/                 # User's project directory
 
 ```
 .snowclaw/build/             # Assembled by CLI, blown away and regenerated each time
-  Dockerfile                 # From CLI templates, OPENCLAW_VERSION from marker
-  docker-compose.yml         # Generated, env_file points to ../../.env
+  Dockerfile                 # From CLI templates, OPENCLAW_VERSION substituted
+  docker-compose.yml         # Generated — openclaw + cortex-proxy services
   config/
-    openclaw.json            # Copied from project root
     connections.toml         # Copied from project root
   scripts/
     docker-entrypoint.sh     # From CLI templates
   skills/                    # Copied from project root
   plugins/                   # Copied from CLI templates
+  proxy/                     # Copied from CLI proxy/
+  build-hooks/               # Copied from project root (if any .sh files exist)
   spcs/
-    service.yaml             # From CLI templates, prefix-substituted
-    image-repo.sql           # From CLI templates, prefix-substituted
+    service.yaml             # From CLI templates, placeholders substituted
+    image-repo.sql           # From CLI templates, placeholders substituted
     network-rules.sql        # Generated from .snowclaw/network-rules.json
 ```
 
@@ -80,19 +95,28 @@ Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx 
 
 | Command | Description |
 |---------|-------------|
-| `snowclaw setup` | Scaffolds user files (skills/, .gitignore, workspace/), collects credentials, writes .env + openclaw.json + connections.toml, detects and prompts for network rules, optionally creates Snowflake objects via REST API |
+| `snowclaw setup` | Interactive wizard: scaffolds user files, collects credentials, writes .env + openclaw.json + connections.toml, detects network rules, optionally creates Snowflake objects |
 | `snowclaw setup --force` | Same as setup, but overwrites existing template files |
-| `snowclaw dev` | Assembles build context into `.snowclaw/build/`, runs `docker compose up --build` |
-| `snowclaw build` | Assembles build context, runs `docker build` (no deploy) |
-| `snowclaw deploy` | Checks network rules for changes (prompts if new rules needed), assembles build context, docker build/push to Snowflake registry, creates/updates SPCS service via REST API |
-| `snowclaw update` | Updates `openclaw_version` in `.snowclaw/config.json` marker, optionally redeploys |
-| `snowclaw pull` | Pull skills and/or workspace from SPCS stage (`--workspace-only`, `--skills-only`) |
-| `snowclaw push` | Push skills and/or workspace to SPCS stage (`--workspace-only`, `--skills-only`) |
+| `snowclaw dev` | Assembles build context, runs `docker compose up --build` (openclaw + proxy) |
+| `snowclaw build` | Assembles build context, builds both Docker images (no deploy) |
+| `snowclaw deploy` | Full pipeline: check network rules, build/push both images, update secrets, upload config to stage, create/alter SPCS service |
+| `snowclaw status` | Show deployed service state, endpoints, and compute pool info |
+| `snowclaw suspend` | Suspend service then compute pool (preserves state) |
+| `snowclaw resume` | Resume compute pool then service |
+| `snowclaw restart` | Restart service to pick up config changes |
+| `snowclaw logs` | Fetch container logs (`-n`, `--container`, `--instance` flags) |
+| `snowclaw update` | Update `openclaw_version` in marker, optionally redeploy |
+| `snowclaw pull` | Pull from SPCS stage (`--workspace-only`, `--skills-only`, `--config-only`) |
+| `snowclaw push` | Push to SPCS stage (`--workspace-only`, `--skills-only`, `--config-only`) |
+| `snowclaw channel list` | Show configured channels |
+| `snowclaw channel add` | Interactive wizard to add a channel (Slack, Telegram, Discord) |
+| `snowclaw channel remove <name>` | Remove a channel |
+| `snowclaw channel edit <name>` | Edit channel credentials |
 | `snowclaw network list` | Show current approved network rules |
-| `snowclaw network add <host[:port]>` | Add a network rule (`--reason` flag optional), prompts to apply to Snowflake |
-| `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply to Snowflake |
-| `snowclaw network detect` | Auto-detect required rules from openclaw.json, show diff, optionally save and apply |
-| `snowclaw network apply` | Push all saved rules to Snowflake (CREATE OR REPLACE network rule + external access integration) |
+| `snowclaw network add <host[:port]>` | Add a network rule, prompts to apply |
+| `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply |
+| `snowclaw network detect` | Auto-detect rules from config, show diff, optionally save and apply |
+| `snowclaw network apply` | Push all saved rules to Snowflake |
 | `snowclaw` (bare) | Defaults to `setup` |
 
 ### Installation
@@ -105,113 +129,213 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 
 ### Config generation strategy
 
-- **Secrets** stay as `$VAR` placeholders in `openclaw.json` — OpenClaw resolves env vars at runtime
+- **Secrets** stay as `${VAR}` placeholders in `openclaw.json` — OpenClaw resolves env vars at runtime
 - Actual values go to `.env` (local docker-compose) and Snowflake secrets (SPCS)
+- `CUSTOM_` prefixed vars in `.env` become individual Snowflake secrets at deploy time
+- `SNOWCLAW_MASK_VARS` auto-generated in `.env` — lists all secret var names for proxy masking
 - `connections.toml` uses PAT auth (`authenticator = "PROGRAMMATIC_ACCESS_TOKEN"`)
-- Snowflake objects created via REST API (`POST /api/v2/statements`) — no snowsql dependency for setup
+- Snowflake objects created via REST API (`POST /api/v2/statements`) — no snowsql dependency
+
+## Cortex Proxy Sidecar (`proxy/`)
+
+A FastAPI proxy that sits between OpenClaw and Snowflake Cortex, normalizing requests and masking secrets.
+
+### Request transforms (`transforms.py`)
+
+Applied to Claude models on Cortex:
+- **Serialize parallel tool calls** — Converts parallel tool_call/tool_result turns into sequential single-call turns (fixes Cortex 400 error)
+- **Strip `parallel_tool_calls`** param
+- **Rewrite `max_tokens` → `max_completion_tokens`** (all models)
+- **Strip `response_format: json_object`** for Claude
+
+OpenAI-family models pass through untouched.
+
+### Secret masking (`masking.py`)
+
+- Reads `SNOWCLAW_MASK_VARS` env var for list of var names to mask
+- Scans all outbound message content, tool call arguments, and content arrays
+- Replaces matches with `[REDACTED:VAR_NAME]` (longest-first matching)
+- Skips secrets ≤3 chars
+
+### Integration
+
+- Runs on port 8080 (internal only)
+- OpenClaw's Cortex provider `baseUrl` points to `http://localhost:8080/v1`
+- In docker-compose: sidecar service alongside OpenClaw
+- In SPCS: second container in the same service spec
 
 ## Docker
 
 - **Base image**: `ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}` (default `latest`)
-- **Config sync**: Config baked into `/opt/snowclaw/defaults/` at build time, copied into volume-mounted `/home/node/.openclaw/` at startup by `docker-entrypoint.sh`
+- **Proxy image**: `python:3.12-slim` with FastAPI + httpx
+- **Config sync**: Defaults baked into `/opt/snowclaw/defaults/` at build time; `openclaw.json` uploaded to stage separately (not in image)
 - **Cortex Code**: Installed at build time via official installer
-- **Port**: 18789 (OpenClaw gateway — serves UI, API, WebSocket on single port)
-- **User**: node (UID 1000)
+- **GitHub CLI**: Installed at build time via apt
+- **Build hooks**: User `.sh` scripts in `build-hooks/` injected as a Docker layer (run alphabetically as root)
+- **Port**: 18789 (OpenClaw gateway — UI, API, WebSocket on single port)
+- **Entrypoint**: Runs as root to lock down config files, then drops to `node` (UID 1000)
+
+## Security
+
+### Config lockdown (entrypoint)
+
+The entrypoint runs as root and sets file permissions before dropping to `node`:
+- `openclaw.json` → `root:node 440` (read-only for gateway, no write for agent)
+- `credentials/` → `root:node 440`
+- `secrets.json` → `root:node 440`
+- `workspace/` and `skills/` → `node:node` (writable)
+
+### Tool policy
+
+Generated `openclaw.json` includes `tools.fs.workspaceOnly: true` — restricts agent file tools to workspace directory only. Two independent layers: OS permissions + tool policy.
+
+### Admin/service role separation
+
+- **Admin role** (default: SYSADMIN) — used by CLI for infrastructure management (create database, secrets, compute pool, etc.)
+- **Service role** (default: SNOWCLAW_SERVICE_ROLE) — used by the container at runtime with minimal privileges
+- Setup wizard collects both roles; service role must already exist in Snowflake
+
+### Secret masking
+
+All known secret values are scrubbed from LLM request bodies by the proxy sidecar before they reach Cortex. Covers channel credentials, tool credentials, and user `CUSTOM_` secrets.
 
 ## SPCS Deployment
 
 ### Snowflake objects (created by `snowclaw setup`)
 
-- Database: `snowclaw_db`, Schema: `snowclaw_db.snowclaw_schema`
+- Database & schema (e.g., `snowclaw_db.snowclaw_schema`)
 - Image repository: `snowclaw_repo`
 - Internal stage: `snowclaw_state_stage` (backs persistent volume)
-- Secrets: `snowclaw_sf_token`, `snowclaw_slack_bot_token`, `snowclaw_slack_app_token`
-- Network rule: `snowclaw_egress_rule` (dynamic — managed by `snowclaw network`)
-- External access integration: `snowclaw_external_access` (references the network rule)
+- Secrets: `snowclaw_sf_token`, plus dynamic channel/tool/custom secrets
+- Network rule: `snowclaw_egress_rule` (managed by `snowclaw network`)
+- External access integration: `snowclaw_external_access`
 - Compute pool: `snowclaw_pool` (CPU_X64_S, 1 node)
 
 ### Service spec (`spcs/service.yaml`)
 
-- Container resources: 1-2 CPU, 2-4Gi RAM
-- Secrets injected as env vars from `snowclaw_secrets`
-- Volume: `@snowclaw_state_stage` mounted at `/home/node/.openclaw`
-- Public endpoint on port 18789
+Two containers in one service:
 
-## Model Providers (config-only, no plugins)
+1. **openclaw** — Main gateway
+   - 1-2 CPU, 2-4Gi RAM
+   - Secrets injected as env vars (Snowflake token, channel creds, tool creds, custom secrets)
+   - Volume: `@snowclaw_state_stage` mounted at `/home/node/.openclaw`
 
-- **Snowflake Cortex**: Always enabled. Uses `$SNOWFLAKE_ACCOUNT` and `$SNOWFLAKE_TOKEN` env vars.
+2. **cortex-proxy** — FastAPI sidecar
+   - 0.5-1 CPU, 512Mi-1Gi RAM
+   - Env vars: `CORTEX_BASE_URL`, `SNOWCLAW_MASK_VARS`
+   - Same secrets as openclaw (for masking)
 
-## Slack Integration (config-only)
+Public endpoint on port 18789.
 
-Socket mode preferred for SPCS (no public webhook URL needed). Uses `$SLACK_BOT_TOKEN` and `$SLACK_APP_TOKEN`.
+### Dynamic secrets
 
-## Network Rules (`snowclaw/network.py`)
+- **Channel secrets**: Auto-discovered from enabled channels in `openclaw.json` at deploy time
+- **Custom secrets**: `CUSTOM_` prefixed vars in `.env` → individual Snowflake secrets (`CREATE OR REPLACE SECRET`)
+- **Secret injection**: All secrets dynamically added to `service.yaml` template via placeholder substitution
 
-SPCS blocks all outbound traffic by default. Network rules and external access integrations must be created in Snowflake to allow the container to reach external APIs. SnowClaw manages these dynamically rather than hardcoding them.
+## Model Provider
+
+**Snowflake Cortex** — always enabled, sole built-in provider. Requests routed through the proxy sidecar. Uses `$SNOWFLAKE_ACCOUNT` and `$SNOWFLAKE_TOKEN` env vars. Users can add additional providers manually to `openclaw.json`.
+
+## Channels (`snowclaw/channels.py`)
+
+Multi-channel support with interactive management via `snowclaw channel` commands.
+
+### Supported channels
+
+| Channel | Auth | Notes |
+|---------|------|-------|
+| Slack | Bot token + app token | Socket mode (no public webhook needed) |
+| Telegram | Bot token + user ID | Allowlist-based (`allowFrom`) |
+| Discord | Bot token | Optional guild-based filtering |
 
 ### How it works
 
-1. **Auto-detection** (`detect_required_rules()`): Parses `openclaw.json` to find provider `baseUrl` hostnames and enabled channels (Slack). Always includes `*.snowflakecomputing.com:443` for Cortex. Returns a list of `NetworkRule(host, port, reason)`.
+- `CHANNEL_REGISTRY` in `network.py` defines hosts, credentials (with `secret`/`inline` metadata), and extra config per channel
+- `channels.py` handles interactive flows: add, remove, edit, list
+- Credentials marked `secret=True` go to `.env`; `inline=True` go directly into `openclaw.json`
+- Network rules auto-detected per channel (e.g., `api.telegram.org:443`)
+- Channel changes prompt "redeploy needed" nudge
 
-2. **Persistence**: Approved rules are saved to `.snowclaw/network-rules.json` (committed to git, not gitignored). Format:
-   ```json
-   {
-     "rules": [
-       {"host": "*.snowflakecomputing.com", "port": 443, "reason": "Snowflake Cortex & APIs"}
-     ]
-   }
-   ```
+## Network Rules (`snowclaw/network.py`)
 
-3. **Diff engine** (`diff_rules()`): Compares saved rules against detected/required rules. Returns `(added, removed)` lists.
+SPCS blocks all outbound traffic by default. SnowClaw manages network rules and external access integrations dynamically.
 
-4. **SQL generation** (`build_network_rule_sql()`): Compiles all rules into two SQL statements:
-   - `CREATE OR REPLACE NETWORK RULE {schema}.{prefix}_egress_rule MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = (...)`
-   - `CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION {prefix}_external_access ALLOWED_NETWORK_RULES = (...) ENABLED = TRUE`
+### How it works
 
-5. **Application** (`apply_network_rules()`): Executes the SQL via Snowflake REST API. Updating the network rule is sufficient — the service's external access integration references it, so changes take effect without redeploying the service.
+1. **Auto-detection** (`detect_required_rules()`): Parses `openclaw.json` for provider/channel/tool hostnames. Always includes `*.snowflakecomputing.com:443` for Cortex.
+2. **Persistence**: Rules saved to `.snowclaw/network-rules.json` (committed to git).
+3. **Diff engine** (`diff_rules()`): Compares saved vs. detected rules. Returns `(added, removed)`.
+4. **SQL generation**: `CREATE OR REPLACE NETWORK RULE` + `CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION`.
+5. **Application**: Executes via Snowflake REST API. Changes take effect without redeploying the service.
 
 ### Integration points
 
-- **`cmd_setup()`**: After writing config files, detects required rules, prompts for approval, saves to `network-rules.json`, applies to Snowflake alongside other objects.
-- **`cmd_deploy()`**: Before building, diffs saved rules vs. detected. If changes found, shows diff and prompts for approval. Applies before proceeding with deploy.
-- **`assemble_build_context()`**: Generates `spcs/network-rules.sql` in the build context from saved rules (for reference/manual use).
-- **`cmd_network()`**: Manual management — `list`, `add`, `remove`, `detect`, `apply` subcommands. `add` and `remove` prompt to apply immediately.
+- **`cmd_setup()`**: Detects rules, prompts for approval, applies alongside other Snowflake objects.
+- **`cmd_deploy()`**: Diffs saved vs. detected before building; prompts if changes found.
+- **`assemble_build_context()`**: Generates `spcs/network-rules.sql` for reference.
+- **`cmd_network()`**: Manual management — `list`, `add`, `remove`, `detect`, `apply`.
+
+## Build Hooks
+
+Users can add custom Dockerfile layers via `build-hooks/` directory:
+
+1. Place `.sh` scripts in `build-hooks/` (e.g., `00-install-ffmpeg.sh`, `01-install-python-deps.sh`)
+2. Scripts run alphabetically as root during `docker build`
+3. Empty or missing `build-hooks/` adds no layer
+4. Scripts cleaned up after execution (`rm -rf /tmp/build-hooks`)
+
+## Config Sync (push/pull)
+
+`openclaw.json` lives on the Snowflake stage-backed volume, not baked into the image:
+
+- `snowclaw push --config-only` → uploads local config to stage
+- `snowclaw pull --config-only` → downloads config from stage
+- `snowclaw restart` → service picks up new config from volume
+- Skills and workspace also syncable via `--skills-only` / `--workspace-only`
+- No flags → syncs all three (skills + workspace + config)
 
 ## Plugins (stubs — not yet implemented)
 
 ### cortex-tools
 
-Registers 4 tools via `api.registerTool()`: `cortex_sql_query`, `cortex_complete`, `cortex_translate`, `cortex_summarize`. Execution pipeline (snowflake-sdk) not yet wired.
+Registers 4 tools: `cortex_sql_query`, `cortex_complete`, `cortex_translate`, `cortex_summarize`. Execution pipeline (snowflake-sdk) not yet wired.
 
 ### cortex-code
 
-MCP endpoint at `/mcp` via `api.registerHttpRoute()`. Handles JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tool enumeration and invocation not yet wired.
+MCP endpoint at `/mcp`. Handles JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tool enumeration and invocation not yet wired.
 
 ## Architecture
 
 ```
-Slack <--socket--> SPCS Ingress <--> OpenClaw Gateway (port 18789)
-                                       |
-                                       +-- Control UI (same origin)
-                                       +-- WebSocket RPC (same origin)
-                                       +-- /v1/* OpenAI-compat API (same origin)
-                                       +-- Plugin HTTP routes (same origin)
-                                       |
-                                       +-- Snowflake Cortex LLMs (outbound HTTPS)
-                                       +-- Cortex Code MCP (plugin route)
+Channels (Slack/Telegram/Discord) <--> SPCS Ingress <--> OpenClaw Gateway (port 18789)
+                                                            |
+                                                            +-- Control UI
+                                                            +-- WebSocket RPC
+                                                            +-- /v1/* OpenAI-compat API
+                                                            +-- Plugin HTTP routes
+                                                            |
+                                                            +-- Cortex Proxy (port 8080, sidecar)
+                                                            |     +-- Secret masking
+                                                            |     +-- Request transforms
+                                                            |     +-- SSE streaming passthrough
+                                                            |     |
+                                                            |     +-- Snowflake Cortex LLMs
+                                                            |
+                                                            +-- Cortex Code MCP (plugin route)
 ```
 
-All frontend traffic is same-origin. SPCS exposes one ingress endpoint. Snowflake handles CORS.
+All frontend traffic is same-origin. SPCS exposes one ingress endpoint. The proxy is internal only (not exposed to ingress).
 
 ## Phased Rollout
 
-1. **Phase 1** (current): Open source bootstrapper — Dockerfile, SPCS specs, CLI, config-only providers, Slack
+1. **Phase 1** (current): Open source bootstrapper — CLI, Cortex proxy, multi-channel messaging, config lockdown, build hooks, custom secrets
 2. **Phase 2**: Build cortex-tools and cortex-code plugins, upstream PRs for OpenClaw gaps
 3. **Phase 3**: Repackage as Snowflake Native App (separate proprietary codebase)
 
 ## Future Work
 
 - Custom UI for SQL query results and visualizations
-- Security profiles (preset configurations)
 - Out-of-the-box Snowflake skills from Cortex Code
 - Session maintenance config (pruning, rotation, max disk usage)
+- Credential injection proxy — secrets never enter the agent container (design doc exists as issue #13)
