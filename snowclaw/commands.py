@@ -31,6 +31,7 @@ from snowclaw.network import (
     diff_rules,
     format_rules_table,
     get_channel_secrets,
+    get_custom_secrets,
     load_network_rules,
     offer_apply_rules,
     parse_host_port,
@@ -486,6 +487,11 @@ def cmd_deploy(args: argparse.Namespace):
         prefix = re.sub(r"_db$", "", db.lower())
         for sec in get_channel_secrets(prefix, enabled_channels):
             secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
+    # Add custom user secrets from CUSTOM_ prefixed vars in .env
+    prefix = re.sub(r"_db$", "", db.lower())
+    for sec in get_custom_secrets(prefix, root / ".env"):
+        secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
 
     for secret_name, value in secret_map.items():
         escaped = value.replace("'", "\\'") if value else ""

@@ -13,6 +13,7 @@ __CHANNEL_SECRETS__
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
           secretKeyRef: secret_string
           envVarName: BRAVE_API_KEY
+__CUSTOM_SECRETS__
       resources:
         requests:
           cpu: 1
@@ -39,6 +40,7 @@ __CHANNEL_SECRETS_PROXY__
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
           secretKeyRef: secret_string
           envVarName: BRAVE_API_KEY
+__CUSTOM_SECRETS_PROXY__
       resources:
         requests:
           cpu: 0.5
