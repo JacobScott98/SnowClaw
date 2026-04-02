@@ -174,14 +174,19 @@ def cmd_setup(args: argparse.Namespace):
 
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
     role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
+    console.print(
+        "\n[dim]SnowClaw service objects (image repo, stage, compute pool, secrets, etc.) "
+        "will be created in this database and schema. You can use an existing database/schema "
+        "as long as the role above has the required privileges.[/dim]\n"
+    )
     database = inquirer.text(
-        message="Snowflake database name:",
+        message="Snowflake database:",
         default="snowclaw_db",
         validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
         invalid_message="Database name must be alphanumeric with underscores, starting with a letter.",
     ).execute().strip()
     schema = inquirer.text(
-        message="Snowflake schema name:",
+        message="Snowflake schema:",
         default="snowclaw_schema",
         validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
         invalid_message="Schema name must be alphanumeric with underscores, starting with a letter.",
@@ -206,6 +211,7 @@ def cmd_setup(args: argparse.Namespace):
     marker = {
         "version": __version__,
         "created": datetime.now(timezone.utc).isoformat(),
+        "account": account.strip(),
         "database": database,
         "schema": schema,
         "openclaw_version": "latest",
@@ -1051,7 +1057,8 @@ def cmd_status(args: argparse.Namespace):
                 for row in rows:
                     ep_name = row[name_idx] if name_idx < len(row) else "?"
                     ep_url = row[url_idx] if url_idx < len(row) else "?"
-                    console.print(f"  {ep_name} → [cyan]{ep_url}[/cyan]")
+                    link = ep_url if ep_url.startswith("http") else f"https://{ep_url}"
+                    console.print(f"  {ep_name} → [link={link}][cyan]{ep_url}[/cyan][/link]")
             else:
                 console.print("[bold]Endpoints:[/bold] [dim]None available yet[/dim]")
         except requests.HTTPError:
@@ -1336,10 +1343,10 @@ def model_set():
             {"name": m["name"], "value": m["id"]}
             for m in CORTEX_MODELS
         ],
-        default=current.removeprefix("cortex:") if current.startswith("cortex:") else None,
+        default=current.removeprefix("cortex/") if current.startswith("cortex/") else None,
     ).execute()
 
-    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"cortex:{selected}"
+    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"cortex/{selected}"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     model_name = next((m["name"] for m in CORTEX_MODELS if m["id"] == selected), selected)
     console.print(f"  [green]✓[/green] Default model set to [bold]{model_name}[/bold]")
@@ -1367,7 +1374,7 @@ def cmd_logs(args: argparse.Namespace):
     service_name = names["service"]
 
     num_lines = getattr(args, "lines", 100)
-    container = getattr(args, "container", "openclaw")
+    container = "cortex-proxy" if getattr(args, "proxy", False) else getattr(args, "container", "openclaw")
     instance_id = getattr(args, "instance", "0")
 
     fqn_service = f"{fqn_schema}.{service_name}"

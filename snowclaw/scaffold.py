@@ -35,6 +35,7 @@ services:
       - cortex-proxy
     volumes:
       - openclaw-data:/home/node/.openclaw
+      - ../../openclaw.json:/home/node/.openclaw/openclaw.json:ro
     restart: unless-stopped
 
 volumes:

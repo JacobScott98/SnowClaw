@@ -114,7 +114,7 @@ def write_openclaw_config(root: Path, settings: dict):
         "models": {"providers": {}},
         "channels": {},
         "agents": {"defaults": {
-            "model": f"cortex:{settings.get('default_model', CORTEX_MODELS[0]['id'])}",
+            "model": f"cortex/{settings.get('default_model', CORTEX_MODELS[0]['id'])}",
         }},
     }
 

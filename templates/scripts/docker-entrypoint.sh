@@ -24,8 +24,8 @@ mkdir -p "$OPENCLAW_HOME/workspace"
 # ---------------------------------------------------------------------------
 
 if [ -f "$OPENCLAW_HOME/openclaw.json" ]; then
-    chown root:node "$OPENCLAW_HOME/openclaw.json"
-    chmod 440 "$OPENCLAW_HOME/openclaw.json"
+    chown root:node "$OPENCLAW_HOME/openclaw.json" 2>/dev/null || true
+    chmod 440 "$OPENCLAW_HOME/openclaw.json" 2>/dev/null || true
 fi
 
 if [ -d "$OPENCLAW_HOME/credentials" ]; then

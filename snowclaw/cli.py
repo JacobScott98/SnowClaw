@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     logs_parser = sub.add_parser("logs", help="Show container logs from the SPCS service")
     logs_parser.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines (default: 100)")
+    logs_parser.add_argument("-p", "--proxy", action="store_true", help="Show proxy container logs instead of openclaw")
     logs_parser.add_argument("--container", default="openclaw", help="Container name (default: openclaw)")
     logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
 
