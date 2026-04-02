@@ -39,7 +39,7 @@ if ! command -v pipx &>/dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-info "Using pipx at $(command -v pipx)"
+info "Using pipx via: $PY -m pipx"
 
 # --- Clone or update repo ---
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -52,7 +52,7 @@ fi
 
 # --- Install CLI from local checkout ---
 info "Installing snowclaw CLI..."
-pipx install --force -e "$INSTALL_DIR"
+$PY -m pipx install --force -e "$INSTALL_DIR"
 
 # --- Verify ---
 if command -v snowclaw &>/dev/null; then

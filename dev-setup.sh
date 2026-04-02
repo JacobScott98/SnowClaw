@@ -38,7 +38,7 @@ fi
 
 # --- Editable install with dev extras ---
 info "Installing snowclaw (editable + dev deps)..."
-pipx install --force -e ".[dev]"
+$PY -m pipx install --force -e ".[dev]"
 
 # --- Verify ---
 if ! command -v snowclaw &>/dev/null; then
@@ -48,8 +48,8 @@ fi
 info "Installed snowclaw $(snowclaw --version 2>/dev/null || echo '(version unknown)')"
 
 # Check pytest is available via pipx runpip
-if pipx runpip snowclaw show pytest &>/dev/null; then
-    info "pytest available — run tests with: pipx run --spec . pytest"
+if $PY -m pipx runpip snowclaw show pytest &>/dev/null; then
+    info "pytest available — run tests with: $PY -m pipx run --spec . pytest"
 else
     info "Warning: pytest not found in the snowclaw venv"
 fi
