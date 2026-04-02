@@ -8,6 +8,12 @@ from pathlib import Path
 from snowclaw.network import CHANNEL_REGISTRY, TOOL_REGISTRY
 from snowclaw.utils import console
 
+CORTEX_MODELS = [
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": 16384},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": 16384},
+    {"id": "openai-gpt-5.1", "name": "GPT-5.1", "contextWindow": 1047576, "maxTokens": 16384},
+]
+
 
 def write_dotenv(root: Path, settings: dict):
     """Write .env file with all secrets."""
@@ -107,7 +113,9 @@ def write_openclaw_config(root: Path, settings: dict):
         },
         "models": {"providers": {}},
         "channels": {},
-        "agents": {"defaults": {}},
+        "agents": {"defaults": {
+            "model": f"cortex/{settings.get('default_model', CORTEX_MODELS[0]['id'])}",
+        }},
     }
 
     # Cortex provider (always included)
@@ -115,14 +123,7 @@ def write_openclaw_config(root: Path, settings: dict):
         "baseUrl": "http://localhost:8080/v1",
         "apiKey": "${SNOWFLAKE_TOKEN}",
         "api": "openai-completions",
-        "models": [
-            {
-                "id": "claude-opus-4-6",
-                "name": "Claude Opus 4.6",
-                "contextWindow": 200000,
-                "maxTokens": 128000,
-            }
-        ],
+        "models": CORTEX_MODELS,
     }
 
     # Channels — generate config block for each enabled channel

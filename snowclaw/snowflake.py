@@ -27,7 +27,7 @@ def build_setup_statements(names: dict) -> list[str]:
         ),
         (
             f"CREATE COMPUTE POOL IF NOT EXISTS {names['pool']} "
-            "MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S"
+            "MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS"
         ),
     ]
 

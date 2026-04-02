@@ -223,7 +223,7 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
         parsed = urlparse(base_url)
         host = parsed.hostname
         port = parsed.port or 443
-        if host and not host.endswith(".snowflakecomputing.com"):
+        if host and not host.endswith(".snowflakecomputing.com") and host not in ("localhost", "127.0.0.1", "::1"):
             rules.append(NetworkRule(host, port, f"{name} provider"))
 
     # Scan channels — add hosts for each enabled channel from the registry

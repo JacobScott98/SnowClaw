@@ -62,39 +62,46 @@ async def chat_completions(request: Request) -> Response:
     is_streaming = transformed.get("stream", False)
     client = _get_client()
 
-    if is_streaming:
-        upstream_req = client.build_request(
-            "POST", upstream_url, json=transformed, headers=headers
-        )
-        upstream_resp = await client.send(upstream_req, stream=True)
-
-        if upstream_resp.status_code != 200:
-            error_body = await upstream_resp.aread()
-            await upstream_resp.aclose()
-            return JSONResponse(
-                status_code=upstream_resp.status_code,
-                content={"error": error_body.decode("utf-8", errors="replace")},
+    try:
+        if is_streaming:
+            upstream_req = client.build_request(
+                "POST", upstream_url, json=transformed, headers=headers
             )
+            upstream_resp = await client.send(upstream_req, stream=True)
 
-        async def stream_chunks():
-            try:
-                async for chunk in upstream_resp.aiter_bytes():
-                    yield chunk
-            finally:
+            if upstream_resp.status_code != 200:
+                error_body = await upstream_resp.aread()
                 await upstream_resp.aclose()
+                return JSONResponse(
+                    status_code=upstream_resp.status_code,
+                    content={"error": error_body.decode("utf-8", errors="replace")},
+                )
 
-        return StreamingResponse(
-            stream_chunks(),
-            status_code=upstream_resp.status_code,
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
+            async def stream_chunks():
+                try:
+                    async for chunk in upstream_resp.aiter_raw():
+                        yield chunk
+                finally:
+                    await upstream_resp.aclose()
+
+            return StreamingResponse(
+                stream_chunks(),
+                status_code=upstream_resp.status_code,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        else:
+            resp = await client.post(upstream_url, json=transformed, headers=headers)
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+    except httpx.ConnectError as exc:
+        logger.error("Failed to connect to upstream %s: %s", upstream_url, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Cannot reach Cortex endpoint: {exc}"},
         )
-    else:
-        resp = await client.post(upstream_url, json=transformed, headers=headers)
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
 
 
 if __name__ == "__main__":

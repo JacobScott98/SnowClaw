@@ -11,6 +11,7 @@ from snowclaw.commands import (
     cmd_deploy,
     cmd_dev,
     cmd_logs,
+    cmd_model,
     cmd_network,
     cmd_pull,
     cmd_push,
@@ -45,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     logs_parser = sub.add_parser("logs", help="Show container logs from the SPCS service")
     logs_parser.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines (default: 100)")
+    logs_parser.add_argument("-p", "--proxy", action="store_true", help="Show proxy container logs instead of openclaw")
     logs_parser.add_argument("--container", default="openclaw", help="Container name (default: openclaw)")
     logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
 
@@ -93,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     ch_edit_parser = ch_sub.add_parser("edit", help="Edit channel credentials")
     ch_edit_parser.add_argument("name", help="Channel type to edit (e.g. slack, telegram, discord)")
 
+    # --- snowclaw model ---
+    model_parser = sub.add_parser("model", help="View or change the default agent model")
+    model_sub = model_parser.add_subparsers(dest="model_command")
+    model_sub.add_parser("list", help="List available models")
+    model_sub.add_parser("set", help="Change the default model")
+
     return parser
 
 
@@ -114,6 +122,7 @@ def main():
         "push": cmd_push,
         "network": cmd_network,
         "channel": cmd_channel,
+        "model": cmd_model,
         "logs": cmd_logs,
     }
 
