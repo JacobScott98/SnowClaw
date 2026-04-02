@@ -32,11 +32,12 @@ fi
 info "Found Python $PY_VERSION"
 
 # --- Install pipx if missing ---
-if ! command -v pipx &>/dev/null; then
+if ! $PY -m pipx --version &>/dev/null; then
     info "Installing pipx..."
     $PY -m pip install --user pipx 2>/dev/null || $PY -m pip install --break-system-packages --user pipx
     $PY -m pipx ensurepath
     export PATH="$HOME/.local/bin:$PATH"
+    $PY -m pipx --version &>/dev/null || err "pipx installed but not importable by $PY. Try: $PY -m pip install pipx"
 fi
 
 info "Using pipx via: $PY -m pipx"
