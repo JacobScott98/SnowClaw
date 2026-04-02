@@ -32,6 +32,7 @@ from snowclaw.network import (
     diff_rules,
     format_rules_table,
     get_channel_secrets,
+    get_custom_secrets,
     load_network_rules,
     offer_apply_rules,
     parse_host_port,
@@ -327,6 +328,16 @@ def cmd_build(args: argparse.Namespace):
     marker = read_marker(root)
     image_tag = getattr(args, "tag", None) or "latest"
 
+    console.print("[bold]Building proxy image...[/bold]")
+    result = subprocess.run(
+        ["docker", "build", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
+    )
+    if result.returncode != 0:
+        console.print("[red]Proxy build failed.[/red]")
+        sys.exit(result.returncode)
+    console.print(f"[green]✓[/green] Built image [cyan]snowclaw-proxy:{image_tag}[/cyan]")
+
+    console.print()
     console.print("[bold]Building Docker image...[/bold]")
     result = subprocess.run(
         ["docker", "build", "-t", f"snowclaw:{image_tag}", str(build_dir)],
@@ -421,7 +432,18 @@ def cmd_deploy(args: argparse.Namespace):
         sys.exit(1)
     console.print(f"  [green]✓[/green] Logged in to {registry_host}")
 
-    # Docker build
+    # Docker build — proxy
+    console.print()
+    console.print("[bold]Building proxy image...[/bold]")
+    result = subprocess.run(
+        ["docker", "build", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
+    )
+    if result.returncode != 0:
+        console.print("[red]Proxy build failed.[/red]")
+        sys.exit(1)
+    console.print(f"  [green]✓[/green] Built snowclaw-proxy:{image_tag}")
+
+    # Docker build — main
     console.print()
     console.print("[bold]Building Docker image...[/bold]")
     result = subprocess.run(
@@ -432,7 +454,18 @@ def cmd_deploy(args: argparse.Namespace):
         sys.exit(1)
     console.print(f"  [green]✓[/green] Built snowclaw:{image_tag}")
 
-    # Docker tag & push
+    # Docker tag & push — proxy
+    full_proxy_image = f"{image_repo}/snowclaw-proxy:{image_tag}"
+    console.print()
+    console.print("[bold]Pushing proxy to Snowflake image repository...[/bold]")
+    subprocess.run(["docker", "tag", f"snowclaw-proxy:{image_tag}", full_proxy_image], check=True)
+    result = subprocess.run(["docker", "push", full_proxy_image])
+    if result.returncode != 0:
+        console.print("[red]Proxy push failed.[/red]")
+        sys.exit(1)
+    console.print(f"  [green]✓[/green] Pushed {full_proxy_image}")
+
+    # Docker tag & push — main
     full_image = f"{image_repo}/snowclaw:{image_tag}"
     console.print()
     console.print("[bold]Pushing to Snowflake image repository...[/bold]")
@@ -465,6 +498,11 @@ def cmd_deploy(args: argparse.Namespace):
         prefix = re.sub(r"_db$", "", db.lower())
         for sec in get_channel_secrets(prefix, enabled_channels):
             secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
+    # Add custom user secrets from CUSTOM_ prefixed vars in .env
+    prefix = re.sub(r"_db$", "", db.lower())
+    for sec in get_custom_secrets(prefix, root / ".env"):
+        secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
 
     for secret_name, value in secret_map.items():
         escaped = value.replace("'", "\\'") if value else ""

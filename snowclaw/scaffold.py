@@ -8,16 +8,31 @@ import shutil
 import sys
 from pathlib import Path
 
-from snowclaw.network import build_network_rule_sql, get_channel_secrets, load_network_rules
+from snowclaw.network import (
+    CHANNEL_REGISTRY,
+    TOOL_REGISTRY,
+    build_network_rule_sql,
+    get_channel_secrets,
+    get_custom_secrets,
+    load_network_rules,
+)
 from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
 
 
 DOCKER_COMPOSE_TEMPLATE = """\
 services:
+  cortex-proxy:
+    build: ./proxy
+    network_mode: host
+    env_file: ../../.env
+    restart: unless-stopped
+
   openclaw:
     build: .
     network_mode: host
     env_file: ../../.env
+    depends_on:
+      - cortex-proxy
     volumes:
       - openclaw-data:/home/node/.openclaw
     restart: unless-stopped
@@ -73,6 +88,26 @@ def scaffold_user_files(target: Path, force: bool = False) -> tuple[list[str], l
         (workspace / ".gitkeep").touch()
         copied.append("workspace/")
 
+    # Create build-hooks/ directory with README
+    build_hooks = target / "build-hooks"
+    if not build_hooks.exists():
+        build_hooks.mkdir()
+        (build_hooks / ".gitkeep").touch()
+        (build_hooks / "README.md").write_text(
+            "# Build Hooks\n"
+            "\n"
+            "Place .sh scripts here to customize your Docker image.\n"
+            "Scripts run alphabetically during `snowclaw build` as root.\n"
+            "\n"
+            "Examples:\n"
+            "  00-install-ffmpeg.sh:  apt-get update && apt-get install -y ffmpeg\n"
+            "  01-install-python.sh:  pip install pandas numpy\n"
+            "\n"
+            "Note: These run at build time, not runtime. Environment variables\n"
+            "and secrets are NOT available. Use for package installs and static config.\n"
+        )
+        copied.append("build-hooks/")
+
     return copied, skipped
 
 
@@ -104,6 +139,32 @@ def assemble_build_context(root: Path) -> Path:
         f"ARG OPENCLAW_VERSION={openclaw_version}",
         dockerfile_content,
     )
+
+    # Inject build hooks layer if user has .sh scripts in build-hooks/
+    build_hooks_src = root / "build-hooks"
+    has_hooks = (
+        build_hooks_src.is_dir()
+        and any(build_hooks_src.glob("*.sh"))
+    )
+    if has_hooks:
+        shutil.copytree(
+            build_hooks_src,
+            build_dir / "build-hooks",
+            ignore=shutil.ignore_patterns(".gitkeep", "README.md"),
+        )
+        hook_layer = (
+            "\n# User build hooks\n"
+            "COPY build-hooks/ /tmp/build-hooks/\n"
+            'RUN for script in /tmp/build-hooks/*.sh; do [ -f "$script" ]'
+            ' && chmod +x "$script" && echo "Running $script..."'
+            ' && "$script"; done && rm -rf /tmp/build-hooks\n'
+        )
+        # Insert after the GitHub CLI install block, before mkdir -p /home/node/.openclaw
+        dockerfile_content = dockerfile_content.replace(
+            "# Ensure the openclaw home dir",
+            hook_layer + "\n# Ensure the openclaw home dir",
+        )
+
     (build_dir / "Dockerfile").write_text(dockerfile_content)
 
     # Generate docker-compose.yml
@@ -139,6 +200,12 @@ def assemble_build_context(root: Path) -> Path:
     if plugins_src.is_dir():
         shutil.copytree(plugins_src, build_dir / "plugins")
 
+    # Copy proxy/ from CLI repo into build context
+    cli_root = templates.parent
+    proxy_src = cli_root / "proxy"
+    if proxy_src.is_dir():
+        shutil.copytree(proxy_src, build_dir / "proxy")
+
     # Copy and prefix-substitute SPCS files
     spcs_dir = build_dir / "spcs"
     spcs_dir.mkdir()
@@ -163,6 +230,43 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    # Build custom secrets YAML block from CUSTOM_ vars in .env
+    env_file = root / ".env"
+    custom_secrets = get_custom_secrets(prefix, env_file)
+    custom_secrets_yaml = ""
+    for sec in custom_secrets:
+        custom_secrets_yaml += (
+            f"        - snowflakeSecret: {fqn_schema}.{sec['secret_name']}\n"
+            f"          secretKeyRef: secret_string\n"
+            f"          envVarName: {sec['env_var']}\n"
+        )
+
+    # Build SNOWCLAW_MASK_VARS from secret credentials that are configured
+    # (reads .env to check which vars actually have values)
+    mask_var_names = ["SNOWFLAKE_TOKEN"]
+    for registry in (CHANNEL_REGISTRY, TOOL_REGISTRY):
+        for entry in registry.values():
+            for cred in entry.get("credentials", []):
+                if cred.get("secret") and cred["env_var"] not in mask_var_names:
+                    mask_var_names.append(cred["env_var"])
+
+    # Filter to only vars that have values in .env
+    env_values: dict[str, str] = {}
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                env_values[k.strip()] = v.strip()
+    mask_vars_list = [v for v in mask_var_names if env_values.get(v)]
+    # Add CUSTOM_ var names to mask list
+    for sec in custom_secrets:
+        if sec["env_var"] not in mask_vars_list:
+            mask_vars_list.append(sec["env_var"])
+    mask_vars_value = ",".join(mask_vars_list)
+
+    account = marker.get("account", "")
+
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
         if src.exists():
@@ -172,6 +276,11 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             if name == "service.yaml":
                 content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
+                content = content.replace("__CHANNEL_SECRETS_PROXY__", channel_secrets_yaml)
+                content = content.replace("__CUSTOM_SECRETS__", custom_secrets_yaml)
+                content = content.replace("__CUSTOM_SECRETS_PROXY__", custom_secrets_yaml)
+                content = content.replace("__SNOWCLAW_MASK_VARS__", mask_vars_value)
+                content = content.replace("__SNOWCLAW_ACCOUNT__", account)
             (spcs_dir / name).write_text(content)
 
     # Generate network-rules.sql from saved rules

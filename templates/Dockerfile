@@ -28,10 +28,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Ensure the openclaw home dir exists with correct ownership so volume mounts work
 RUN mkdir -p /home/node/.openclaw && chown 1000:1000 /home/node/.openclaw
 
-USER node
-
-# Entrypoint wrapper syncs defaults into the volume-mounted home dir
-COPY --chown=1000:1000 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Entrypoint runs as root to enforce file permissions, then drops to node.
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
