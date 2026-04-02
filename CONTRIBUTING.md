@@ -18,7 +18,26 @@ This installs SnowClaw in editable mode via pipx with dev dependencies (pytest).
 pipx run --spec . pytest
 ```
 
-## Project Layout
+## Project Structure
+
+After running `snowclaw setup`:
+
+```
+my-openclaw/
+  .snowclaw/              # Project marker and build artifacts
+    config.json           # Project metadata (version, prefix, etc.)
+    network-rules.json    # Approved network rules for external access
+  .env                    # Secrets — gitignored
+  .gitignore
+  openclaw.json           # OpenClaw configuration (providers, channels, agents)
+  connections.toml        # Snowflake connection — gitignored
+  skills/                 # Editable skill definitions
+    cortex-code/
+  build-hooks/            # Custom build scripts (*.sh, run at image build time)
+  workspace/              # Markdown knowledge base
+```
+
+## Project Layout (repo)
 
 - `snowclaw/` — CLI Python package (editable install means changes are live)
 - `templates/` — Build-time templates (Dockerfile, SPCS specs, plugins, scripts)
