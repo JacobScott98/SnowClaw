@@ -16,11 +16,11 @@ __CHANNEL_SECRETS__
 __CUSTOM_SECRETS__
       resources:
         requests:
-          cpu: 1
-          memory: 2Gi
+          cpu: 2.5
+          memory: 10Gi
         limits:
-          cpu: 2
-          memory: 4Gi
+          cpu: 2.5
+          memory: 10Gi
       volumeMounts:
         - name: openclaw-state
           mountPath: /home/node/.openclaw
@@ -44,10 +44,10 @@ __CUSTOM_SECRETS_PROXY__
       resources:
         requests:
           cpu: 0.5
-          memory: 512Mi
+          memory: 2Gi
         limits:
-          cpu: 1
-          memory: 1Gi
+          cpu: 0.5
+          memory: 2Gi
   endpoints:
     - name: snowclaw
       port: 18789

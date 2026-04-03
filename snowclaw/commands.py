@@ -379,7 +379,7 @@ def cmd_deploy(args: argparse.Namespace):
     fqn_schema = names["schema"]
     warehouse = ctx["warehouse"]
     repo = names["repo"]
-    registry_host = f"{account}.registry.snowflakecomputing.com"
+    registry_host = f"{account}.registry.snowflakecomputing.com".lower()
     image_repo = f"{registry_host}/{db}/{schema_name}/{repo}".lower()
 
     # Check network rules before deploying
