@@ -7,9 +7,6 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 
-# Copy Snowflake connection config
-COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections.toml
-
 # Install cortex code
 RUN SKIP_PODMAN=1 NON_INTERACTIVE=1 \
  sh -c 'curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh'

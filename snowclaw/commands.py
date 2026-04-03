@@ -356,6 +356,97 @@ def cmd_build(args: argparse.Namespace):
     console.print(f"[green]✓[/green] Built image [cyan]snowclaw:{image_tag}[/cyan]")
 
 
+def _update_secrets(root: Path, ctx: dict, names: dict, env: dict) -> None:
+    """Create/update all Snowflake SECRET objects from .env values."""
+    account = ctx["account"]
+    token = ctx["token"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+
+    secret_map = {
+        names["secret_sf_token"]: token,
+        names["secret_gh_token"]: env.get("GH_TOKEN", ""),
+        names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
+    }
+
+    # Add channel secrets dynamically from openclaw.json
+    config_path = root / "openclaw.json"
+    if config_path.exists():
+        oc_config = json.loads(config_path.read_text())
+        enabled_channels = [
+            ch for ch, cfg in oc_config.get("channels", {}).items()
+            if cfg.get("enabled", False)
+        ]
+        prefix = re.sub(r"_db$", "", db.lower())
+        for sec in get_channel_secrets(prefix, enabled_channels):
+            secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
+    # Add custom user secrets from CUSTOM_ prefixed vars in .env
+    prefix = re.sub(r"_db$", "", db.lower())
+    for sec in get_custom_secrets(prefix, root / ".env"):
+        secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
+    for secret_name, value in secret_map.items():
+        escaped = value.replace("'", "\\'") if value else ""
+        try:
+            snowflake_rest_execute(
+                account, token,
+                f"CREATE OR REPLACE SECRET {fqn_schema}.{secret_name} "
+                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'",
+                database=db, schema=schema_name,
+            )
+            console.print(f"  [green]✓[/green] Updated {secret_name}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
+            raise
+
+
+def _upload_connections_toml(root: Path, ctx: dict, names: dict) -> None:
+    """Upload connections.toml to the SPCS stage."""
+    from snowclaw.stage import get_sf_connection, stage_push_file
+
+    connections_file = root / "connections.toml"
+    if not connections_file.is_file():
+        console.print("  [dim]Skipping connections.toml (file not found)[/dim]")
+        return
+
+    account = ctx["account"]
+    token = ctx["token"]
+    sf_user = ctx["user"]
+    warehouse = ctx["warehouse"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+
+    console.print("[bold]Uploading connections.toml to stage...[/bold]")
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        conn = get_sf_connection(
+            account=account,
+            user=sf_user,
+            token=token,
+            warehouse=warehouse,
+            database=db,
+            schema=schema_name,
+        )
+        try:
+            stage_push_file(conn, f"{fqn_schema}.{names['stage']}", str(connections_file), "")
+            console.print(f"  [green]✓[/green] Pushed connections.toml")
+            break
+        except Exception as e:
+            if attempt < max_attempts:
+                delay = 2 ** attempt
+                console.print(f"  [yellow]⚠[/yellow] Attempt {attempt}/{max_attempts} failed: {e}")
+                console.print(f"  Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                console.print(f"  [red]✗[/red] Failed to push connections.toml after {max_attempts} attempts: {e}")
+                sys.exit(1)
+        finally:
+            conn.close()
+
+
 def cmd_deploy(args: argparse.Namespace):
     """Build, push, and deploy to SPCS."""
     render_banner()
@@ -485,44 +576,7 @@ def cmd_deploy(args: argparse.Namespace):
     # Update secrets via REST API
     console.print()
     console.print("[bold]Updating Snowflake secrets...[/bold]")
-    secret_map = {
-        names["secret_sf_token"]: token,
-        names["secret_gh_token"]: env.get("GH_TOKEN", ""),
-        names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
-    }
-
-    # Add channel secrets dynamically from openclaw.json
-    config_path = root / "openclaw.json"
-    if config_path.exists():
-        import json as _json
-
-        oc_config = _json.loads(config_path.read_text())
-        enabled_channels = [
-            ch for ch, cfg in oc_config.get("channels", {}).items()
-            if cfg.get("enabled", False)
-        ]
-        prefix = re.sub(r"_db$", "", db.lower())
-        for sec in get_channel_secrets(prefix, enabled_channels):
-            secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
-
-    # Add custom user secrets from CUSTOM_ prefixed vars in .env
-    prefix = re.sub(r"_db$", "", db.lower())
-    for sec in get_custom_secrets(prefix, root / ".env"):
-        secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
-
-    for secret_name, value in secret_map.items():
-        escaped = value.replace("'", "\\'") if value else ""
-        try:
-            snowflake_rest_execute(
-                account, token,
-                f"CREATE OR REPLACE SECRET {fqn_schema}.{secret_name} "
-                f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'",
-                database=db, schema=schema_name,
-            )
-            console.print(f"  [green]✓[/green] Updated {secret_name}")
-        except requests.HTTPError as e:
-            console.print(f"  [red]✗[/red] Failed to update {secret_name}: {e}")
-            raise
+    _update_secrets(root, ctx, names, env)
 
     # Upload openclaw.json to stage (config lives on the volume, not in the image)
     config_file = root / "openclaw.json"
@@ -556,6 +610,10 @@ def cmd_deploy(args: argparse.Namespace):
                     sys.exit(1)
             finally:
                 conn.close()
+
+    # Upload connections.toml to stage
+    console.print()
+    _upload_connections_toml(root, ctx, names)
 
     # Create/alter SPCS service
     console.print()
@@ -716,56 +774,118 @@ def cmd_push(args: argparse.Namespace):
     token = ctx["token"]
     sf_user = ctx["user"]
     names = ctx["names"]
+    env = ctx["env"]
 
     if not all([account, token, sf_user]):
         console.print("[red]Missing required credentials in .env.[/red]")
         console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
         sys.exit(1)
 
-    targets = _sync_targets(args)
-    fqn_stage = f"{names['schema']}.{names['stage']}"
-
-    conn = get_sf_connection(
-        account=account,
-        user=sf_user,
-        token=token,
-        warehouse=ctx["warehouse"],
-        database=names["db"],
-        schema=names["schema_name"],
+    secrets_only = getattr(args, "secrets", False)
+    has_target_flag = any(
+        getattr(args, f, False) for f in ("workspace_only", "skills_only", "config_only")
     )
-    try:
-        for target in targets:
-            if target == "config":
-                config_file = root / "openclaw.json"
-                if not config_file.is_file():
-                    console.print("  [dim]Skipping openclaw.json (file not found)[/dim]")
-                    continue
-                console.print("[bold]Pushing openclaw.json...[/bold]")
-                stage_push_file(conn, fqn_stage, str(config_file), "")
-                console.print("  [green]✓[/green] Pushed openclaw.json")
-            else:
-                local_dir = root / target
-                if not local_dir.is_dir():
-                    console.print(f"  [dim]Skipping {target}/ (directory not found)[/dim]")
-                    continue
-                console.print(f"[bold]Pushing {target}/...[/bold]")
-                uploaded = push_directory(conn, fqn_stage, target, local_dir)
-                for f in uploaded:
-                    console.print(f"  [green]✓[/green] {target}/{f}")
-                if not uploaded:
-                    console.print(f"  [dim]No files to upload in {target}/[/dim]")
-    finally:
-        conn.close()
+
+    # Push targets unless --secrets is used alone
+    skip_targets = secrets_only and not has_target_flag
+    if not skip_targets:
+        targets = _sync_targets(args)
+        fqn_stage = f"{names['schema']}.{names['stage']}"
+
+        conn = get_sf_connection(
+            account=account,
+            user=sf_user,
+            token=token,
+            warehouse=ctx["warehouse"],
+            database=names["db"],
+            schema=names["schema_name"],
+        )
+        try:
+            for target in targets:
+                if target == "config":
+                    config_file = root / "openclaw.json"
+                    if not config_file.is_file():
+                        console.print("  [dim]Skipping openclaw.json (file not found)[/dim]")
+                        continue
+                    console.print("[bold]Pushing openclaw.json...[/bold]")
+                    stage_push_file(conn, fqn_stage, str(config_file), "")
+                    console.print("  [green]✓[/green] Pushed openclaw.json")
+                else:
+                    local_dir = root / target
+                    if not local_dir.is_dir():
+                        console.print(f"  [dim]Skipping {target}/ (directory not found)[/dim]")
+                        continue
+                    console.print(f"[bold]Pushing {target}/...[/bold]")
+                    uploaded = push_directory(conn, fqn_stage, target, local_dir)
+                    for f in uploaded:
+                        console.print(f"  [green]✓[/green] {target}/{f}")
+                    if not uploaded:
+                        console.print(f"  [dim]No files to upload in {target}/[/dim]")
+        finally:
+            conn.close()
+
+    # Always update secrets and upload connections.toml
+    console.print()
+    console.print("[bold]Updating Snowflake secrets...[/bold]")
+    _update_secrets(root, ctx, names, env)
 
     console.print()
-    console.print("[green]Push complete.[/green]")
+    _upload_connections_toml(root, ctx, names)
 
-    if "config" in targets:
-        console.print()
-        console.print(
-            "[yellow]Tip:[/yellow] Run [bold]snowclaw restart[/bold] to restart"
-            " the service and apply config changes."
+    # Regenerate service spec and alter service to pick up secret changes
+    console.print()
+    console.print("[bold]Updating service specification...[/bold]")
+    build_dir = assemble_build_context(root)
+    service_spec = (build_dir / "spcs" / "service.yaml").read_text()
+    escaped_spec = service_spec.replace("'", "''")
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    service_fqn = f"{fqn_schema}.{service_name}"
+
+    alter_sql = (
+        f"ALTER SERVICE IF EXISTS {service_fqn} "
+        f"FROM SPECIFICATION '{escaped_spec}'"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        raise
+
+    # Restart service (suspend + resume) to apply changes
+    console.print()
+    console.print("[bold]Restarting service to apply updated secrets and configuration...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {service_fqn} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
         )
+        console.print(f"  [green]✓[/green] Service suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend service: {e}")
+        sys.exit(1)
+
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {service_fqn} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume service: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Push complete — service restarting with updated secrets and configuration.[/green]")
+    console.print(
+        "[yellow]Note:[/yellow] The container may take a minute or two to fully spin up."
+    )
 
 
 # ---------------------------------------------------------------------------
