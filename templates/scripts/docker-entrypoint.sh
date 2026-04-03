@@ -15,7 +15,7 @@ mkdir -p "$OPENCLAW_HOME"
 if [ -f "$OPENCLAW_HOME/connections.toml" ]; then
     mkdir -p /home/node/.snowflake
     ln -sf "$OPENCLAW_HOME/connections.toml" /home/node/.snowflake/connections.toml
-    chown -h node:node /home/node/.snowflake/connections.toml
+    chown -R node:node /home/node/.snowflake
 fi
 
 # Skills: only seed on first run (when dir doesn't exist)
