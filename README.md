@@ -46,6 +46,7 @@ SnowClaw is designed to be safe to run in your Snowflake account by default.
 ## Features
 
 - **One-command setup** — Interactive wizard collects credentials, generates config, and optionally provisions all Snowflake objects via REST API. No snowsql required.
+- **Secrets & credential management** — All secrets live in your local `.env` file and are uploaded to Snowflake as individual SECRET objects on every `deploy` or `push`. Nothing is baked into the Docker image. Add any custom environment variable to `.env` and it automatically becomes a Snowflake secret, mounted into the container at runtime. See [Secrets & Credentials](#secrets--credentials) for details.
 - **Snowflake Cortex LLMs** — Pre-configured as a provider. Models run inside Snowflake — your data never leaves your account.
 - **Cortex Code** — AI coding assistant installed automatically in the container with a bundled skill definition. Your agent can write, edit, and manage code out of the box.
 - **Cortex proxy sidecar** — A FastAPI proxy between OpenClaw and Cortex that serializes parallel tool calls (fixing Claude model issues), normalizes request parameters across model families, and masks secrets in outbound traffic.
@@ -74,6 +75,49 @@ Channels <--socket/ws--> SPCS Ingress <--> OpenClaw Gateway (:18789)
 
 All traffic goes through a single SPCS ingress endpoint on port 18789. The Cortex proxy runs as a sidecar container in the same service. Snowflake handles TLS and authentication.
 
+## Secrets & Credentials
+
+SnowClaw manages secrets entirely through your local `.env` file. Secrets are **never baked into the Docker image** — they're uploaded to Snowflake as individual SECRET objects and mounted into the running container at runtime.
+
+### How it works
+
+1. **`snowclaw setup`** collects your Snowflake PAT, channel tokens, and tool credentials during the interactive wizard and writes them to `.env`.
+2. **`snowclaw deploy`** and **`snowclaw push`** automatically read `.env`, create or update a Snowflake SECRET for each variable, and regenerate the SPCS service spec to mount them.
+3. At runtime, secrets are available as environment variables inside the container.
+
+### What becomes a secret
+
+| Source | Example | How it's handled |
+|--------|---------|-----------------|
+| Snowflake auth | `SNOWFLAKE_TOKEN` | Created as a dedicated secret during deploy |
+| Channel credentials | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN` | Added via `snowclaw channel add`, auto-detected per channel |
+| Tool credentials | `GH_TOKEN`, `BRAVE_API_KEY` | Added via setup wizard when tools are selected |
+| Custom variables | Any other `KEY=value` in `.env` | Automatically becomes a Snowflake secret — no config needed |
+
+**Any key=value pair you add to `.env` is automatically uploaded as a Snowflake secret.** There's no separate registration step. Just add the variable, run `snowclaw push`, and it's available in the container.
+
+### Updating secrets
+
+```bash
+# Edit .env with your new or changed values, then:
+snowclaw push              # pushes config, workspace, skills, AND secrets
+snowclaw push --secrets    # push ONLY secrets (skips file sync for speed)
+```
+
+Both commands update the Snowflake SECRET objects and restart the service to pick up changes.
+
+### Secret masking
+
+The Cortex proxy sidecar scans all outbound LLM messages and replaces known secret values with `[REDACTED:VAR_NAME]`. This means your credentials never reach the model, even if the agent tries to include them in a prompt.
+
+Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are added to the masking set. By default, all token and API key variables are masked.
+
+### File permissions at runtime
+
+- `openclaw.json`, `secrets.json`, and the `credentials/` directory are **root-owned and read-only** (mode `440`). The agent process cannot modify configuration or credentials.
+- The `.snowflake/` directory (containing `connections.toml`) is owned by the `node` user so Cortex can read and write connection state.
+- `workspace/` and `skills/` are agent-writable.
+
 ## CLI Commands
 
 | Command | Description |
@@ -89,7 +133,8 @@ All traffic goes through a single SPCS ingress endpoint on port 18789. The Corte
 | `snowclaw restart` | Restart the service to pick up config changes |
 | `snowclaw logs` | Show container logs from the SPCS service |
 | `snowclaw update` | Update the OpenClaw base image version |
-| `snowclaw push` | Push skills, workspace, and config to SPCS stage |
+| `snowclaw push` | Push skills, workspace, config, and secrets to SPCS stage |
+| `snowclaw push --secrets` | Update only Snowflake secrets and connections.toml (skip file sync) |
 | `snowclaw pull` | Pull skills, workspace, and config from SPCS stage |
 | `snowclaw network list` | Show current approved network rules |
 | `snowclaw network add <host>` | Add a network rule (prompts to apply) |
