@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from config import get_cortex_base_url
 from masking import SecretMasker
+from retry import send_with_retry
 from transforms import transform_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -64,17 +65,22 @@ async def chat_completions(request: Request) -> Response:
 
     try:
         if is_streaming:
-            upstream_req = client.build_request(
-                "POST", upstream_url, json=transformed, headers=headers
+            upstream_resp = await send_with_retry(
+                client, "POST", upstream_url,
+                json=transformed, headers=headers, stream=True, model=model,
             )
-            upstream_resp = await client.send(upstream_req, stream=True)
+            retry_count: int = getattr(upstream_resp, "retry_count", 0)
 
             if upstream_resp.status_code != 200:
                 error_body = await upstream_resp.aread()
                 await upstream_resp.aclose()
+                resp_headers: dict[str, str] = {}
+                if retry_count > 0:
+                    resp_headers["X-Retry-Count"] = str(retry_count)
                 return JSONResponse(
                     status_code=upstream_resp.status_code,
                     content={"error": error_body.decode("utf-8", errors="replace")},
+                    headers=resp_headers,
                 )
 
             async def stream_chunks():
@@ -84,18 +90,33 @@ async def chat_completions(request: Request) -> Response:
                 finally:
                     await upstream_resp.aclose()
 
+            resp_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+            if retry_count > 0:
+                resp_headers["X-Retry-Count"] = str(retry_count)
+
             return StreamingResponse(
                 stream_chunks(),
                 status_code=upstream_resp.status_code,
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
+                headers=resp_headers,
             )
         else:
-            resp = await client.post(upstream_url, json=transformed, headers=headers)
-            return JSONResponse(status_code=resp.status_code, content=resp.json())
+            resp = await send_with_retry(
+                client, "POST", upstream_url,
+                json=transformed, headers=headers, stream=False, model=model,
+            )
+            retry_count = getattr(resp, "retry_count", 0)
+            resp_headers = {}
+            if retry_count > 0:
+                resp_headers["X-Retry-Count"] = str(retry_count)
+            return JSONResponse(
+                status_code=resp.status_code,
+                content=resp.json(),
+                headers=resp_headers,
+            )
     except httpx.ConnectError as exc:
         logger.error("Failed to connect to upstream %s: %s", upstream_url, exc)
         return JSONResponse(
