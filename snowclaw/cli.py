@@ -21,6 +21,7 @@ from snowclaw.commands import (
     cmd_status,
     cmd_suspend,
     cmd_update,
+    cmd_upgrade,
 )
 
 
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("resume", help="Resume the SPCS compute pool and service")
     sub.add_parser("restart", help="Restart the SPCS service to pick up config changes")
     sub.add_parser("update", help="Update the OpenClaw version")
+    sub.add_parser("upgrade", help="Update SnowClaw CLI to the latest version")
 
     logs_parser = sub.add_parser("logs", help="Show container logs from the SPCS service")
     logs_parser.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines (default: 100)")
@@ -124,6 +126,7 @@ def main():
         "channel": cmd_channel,
         "model": cmd_model,
         "logs": cmd_logs,
+        "upgrade": cmd_upgrade,
     }
 
     handler = commands.get(args.command or "setup")

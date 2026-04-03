@@ -1406,3 +1406,78 @@ def cmd_logs(args: argparse.Namespace):
     except requests.HTTPError as e:
         console.print(f"[red]Failed to fetch logs:[/red] {e}")
         sys.exit(1)
+
+
+def cmd_upgrade(args: argparse.Namespace):
+    """Update SnowClaw CLI to the latest version via git pull + pipx reinstall."""
+    render_banner()
+
+    old_version = __version__
+
+    # Find the repo root by walking up from this file
+    repo_dir = Path(__file__).resolve().parent
+    while repo_dir != repo_dir.parent:
+        if (repo_dir / ".git").is_dir():
+            break
+        repo_dir = repo_dir.parent
+    else:
+        console.print("[red]SnowClaw was not installed from a git repository.[/red]")
+        sys.exit(1)
+
+    # Warn if working tree is dirty
+    status_result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if status_result.stdout.strip():
+        console.print("[yellow]Warning: SnowClaw repo has uncommitted changes.[/yellow]")
+
+    # Pull latest changes
+    console.print("Pulling latest changes...")
+    pull_result = subprocess.run(
+        ["git", "pull", "--ff-only"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if pull_result.returncode != 0:
+        console.print(f"[red]git pull failed:[/red]\n{pull_result.stderr.strip()}")
+        sys.exit(1)
+
+    if "Already up to date" in pull_result.stdout:
+        console.print(f"[green]✓[/green] Already up to date (snowclaw {old_version})")
+        return
+
+    console.print(pull_result.stdout.strip())
+
+    # Find python executable
+    python_cmd = None
+    for candidate in ("python3", "python"):
+        check = subprocess.run(
+            [candidate, "--version"], capture_output=True, text=True,
+        )
+        if check.returncode == 0:
+            python_cmd = candidate
+            break
+    if not python_cmd:
+        console.print("[red]Could not find python3 or python on PATH.[/red]")
+        sys.exit(1)
+
+    # Reinstall via pipx
+    console.print("Reinstalling with pipx...")
+    pipx_result = subprocess.run(
+        [python_cmd, "-m", "pipx", "install", "--force", "-e", str(repo_dir)],
+        capture_output=True, text=True,
+    )
+    if pipx_result.returncode != 0:
+        console.print(f"[red]pipx reinstall failed:[/red]\n{pipx_result.stderr.strip()}")
+        sys.exit(1)
+
+    # Get new version from the reinstalled CLI
+    ver_result = subprocess.run(
+        ["snowclaw", "--version"], capture_output=True, text=True,
+    )
+    new_version = ver_result.stdout.strip().removeprefix("snowclaw ") if ver_result.returncode == 0 else "unknown"
+
+    if new_version == old_version:
+        console.print(f"[green]✓[/green] Reinstalled snowclaw {old_version} (version unchanged)")
+    else:
+        console.print(f"[green]✓[/green] Updated snowclaw: {old_version} → {new_version}")
