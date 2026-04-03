@@ -1,3 +1,4 @@
+ARG OPENCLAW_VERSION=latest
 FROM --platform=linux/amd64 ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
 # Stage default files into a defaults directory so the entrypoint can
