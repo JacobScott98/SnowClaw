@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     push_group.add_argument("--workspace-only", action="store_true", help="Only push workspace/")
     push_group.add_argument("--skills-only", action="store_true", help="Only push skills/")
     push_group.add_argument("--config-only", action="store_true", help="Only push openclaw.json")
+    push_parser.add_argument("--secrets", action="store_true", help="Only update secrets and connections.toml (skip target push when used alone)")
 
     # --- snowclaw network ---
     net_parser = sub.add_parser(

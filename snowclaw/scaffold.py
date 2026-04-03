@@ -177,16 +177,9 @@ def assemble_build_context(root: Path) -> Path:
     entrypoint_src = templates / "scripts" / "docker-entrypoint.sh"
     shutil.copy2(entrypoint_src, scripts_dir / "docker-entrypoint.sh")
 
-    # Copy user config into config/
-    config_dir = build_dir / "config"
-    config_dir.mkdir()
-
-    # openclaw.json is NOT copied into the build context — it's uploaded
-    # directly to the stage by deploy/push instead of being baked into the image.
-
-    connections_toml = root / "connections.toml"
-    if connections_toml.exists():
-        shutil.copy2(connections_toml, config_dir / "connections.toml")
+    # openclaw.json and connections.toml are NOT copied into the build context —
+    # they're uploaded directly to the stage by deploy/push instead of being
+    # baked into the image.
 
     # Copy user skills/
     skills_src = root / "skills"

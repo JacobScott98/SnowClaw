@@ -6,9 +6,6 @@ FROM --platform=linux/amd64 ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 
-# Copy Snowflake connection config
-COPY --chown=1000:1000 config/connections.toml /home/node/.snowflake/connections.toml
-
 # Install Cortex Code manually — the official install.sh runs `cortex --help`
 # to initialize the binary, which fails under QEMU (exit 132 / SIGILL) when
 # cross-building amd64 images on Apple Silicon.  We replicate the install
