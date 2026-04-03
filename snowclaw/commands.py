@@ -336,7 +336,7 @@ def cmd_build(args: argparse.Namespace):
 
     console.print("[bold]Building proxy image...[/bold]")
     result = subprocess.run(
-        ["docker", "build", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
+        ["docker", "build", "--platform", "linux/amd64", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
     )
     if result.returncode != 0:
         console.print("[red]Proxy build failed.[/red]")
@@ -346,7 +346,7 @@ def cmd_build(args: argparse.Namespace):
     console.print()
     console.print("[bold]Building Docker image...[/bold]")
     result = subprocess.run(
-        ["docker", "build", "-t", f"snowclaw:{image_tag}", str(build_dir)],
+        ["docker", "build", "--platform", "linux/amd64", "-t", f"snowclaw:{image_tag}", str(build_dir)],
     )
     if result.returncode != 0:
         console.print("[red]Build failed.[/red]")
@@ -470,8 +470,8 @@ def cmd_deploy(args: argparse.Namespace):
     fqn_schema = names["schema"]
     warehouse = ctx["warehouse"]
     repo = names["repo"]
-    registry_host = f"{account}.registry.snowflakecomputing.com"
-    image_repo = f"{registry_host}/{db}/{schema_name}/{repo}"
+    registry_host = f"{account}.registry.snowflakecomputing.com".lower()
+    image_repo = f"{registry_host}/{db}/{schema_name}/{repo}".lower()
 
     # Check network rules before deploying
     console.print("[bold]Checking network rules...[/bold]")
@@ -533,7 +533,7 @@ def cmd_deploy(args: argparse.Namespace):
     console.print()
     console.print("[bold]Building proxy image...[/bold]")
     result = subprocess.run(
-        ["docker", "build", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
+        ["docker", "build", "--platform", "linux/amd64", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
     )
     if result.returncode != 0:
         console.print("[red]Proxy build failed.[/red]")
@@ -544,7 +544,7 @@ def cmd_deploy(args: argparse.Namespace):
     console.print()
     console.print("[bold]Building Docker image...[/bold]")
     result = subprocess.run(
-        ["docker", "build", "-t", f"snowclaw:{image_tag}", str(build_dir)],
+        ["docker", "build", "--platform", "linux/amd64", "-t", f"snowclaw:{image_tag}", str(build_dir)],
     )
     if result.returncode != 0:
         console.print("[red]Build failed.[/red]")

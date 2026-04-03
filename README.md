@@ -39,7 +39,6 @@ SnowClaw is designed to be safe to run in your Snowflake account by default.
 - **Network egress control** — All outbound traffic is deny-by-default. Only explicitly approved hosts (managed via `snowclaw network`) get Snowflake network rules and external access integrations. The container cannot reach the internet unless you allow it.
 - **SPCS ingress control** — Snowflake handles TLS termination and authentication on the single public endpoint. There are no open ports or exposed services beyond what SPCS declares — the ingress surface is managed entirely by Snowflake's infrastructure.
 - **File permissions** — `openclaw.json` and credential files are root-owned and read-only at runtime. The agent cannot modify config.
-- **Tool policy** — `workspaceOnly` restricts native file tools to the workspace directory.
 - **Role separation** — The CLI uses your admin role for infrastructure operations. The deployed container runs under a dedicated service role with minimal privileges.
 - **Secret masking** — The Cortex proxy scans all outbound LLM messages and replaces known secret values with `[REDACTED:VAR_NAME]`. Credentials never reach the model.
 - **User-managed secrets** — `CUSTOM_`-prefixed env vars in `.env` become individual Snowflake secrets, mounted at runtime — never baked into the image.
