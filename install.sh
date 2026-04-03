@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO="https://github.com/JacobScott98/SnowClaw.git"
-INSTALL_DIR="${SNOWCLAW_DIR:-$HOME/snowclaw}"
+INSTALL_DIR="${SNOWCLAW_DIR:-$HOME/.snowclaw}"
 MIN_PYTHON="3.10"
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -41,6 +41,13 @@ if ! $PY -m pipx --version &>/dev/null; then
 fi
 
 info "Using pipx via: $PY -m pipx"
+
+# --- Migrate old install location ---
+OLD_DIR="$HOME/snowclaw"
+if [ -z "${SNOWCLAW_DIR:-}" ] && [ -d "$OLD_DIR/.git" ] && [ ! -d "$INSTALL_DIR" ]; then
+    info "Migrating install directory from ~/snowclaw to ~/.snowclaw..."
+    mv "$OLD_DIR" "$INSTALL_DIR"
+fi
 
 # --- Clone or update repo ---
 if [ -d "$INSTALL_DIR/.git" ]; then
