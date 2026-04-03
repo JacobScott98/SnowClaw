@@ -134,12 +134,41 @@ def get_channel_secrets(prefix: str, channels: list[str]) -> list[dict]:
     return result
 
 
-def get_custom_secrets(prefix: str, env_path: Path) -> list[dict]:
-    """Get Snowflake secret mappings for CUSTOM_ prefixed vars in .env.
+def get_env_secrets(prefix: str, env_path: Path) -> list[dict]:
+    """Get Snowflake secret mappings for ALL env vars in .env.
+
+    Reads every key=value pair from the .env file, excluding:
+    - Known config vars (not secrets)
+    - Hardcoded secrets already handled by callers (SNOWFLAKE_TOKEN, GH_TOKEN, BRAVE_API_KEY)
+    - Channel credential env vars (handled by get_channel_secrets())
 
     Returns list of dicts with keys: secret_name, env_var.
     Same format as get_channel_secrets().
     """
+    # Config vars that should not become Snowflake secrets
+    _EXCLUDED_CONFIG_VARS = {
+        "SNOWCLAW_DB",
+        "SNOWCLAW_SCHEMA",
+        "SNOWCLAW_MASK_VARS",
+        "CORTEX_BASE_URL",
+        "IMAGE_TAG",
+    }
+
+    # Hardcoded secrets handled explicitly by callers
+    _HARDCODED_SECRETS = {
+        "SNOWFLAKE_TOKEN",
+        "GH_TOKEN",
+        "BRAVE_API_KEY",
+    }
+
+    # Channel credential env vars (handled by get_channel_secrets())
+    _channel_env_vars: set[str] = set()
+    for entry in CHANNEL_REGISTRY.values():
+        for cred in entry.get("credentials", []):
+            _channel_env_vars.add(cred["env_var"])
+
+    skip = _EXCLUDED_CONFIG_VARS | _HARDCODED_SECRETS | _channel_env_vars
+
     result = []
     if not env_path.exists():
         return result
@@ -149,7 +178,9 @@ def get_custom_secrets(prefix: str, env_path: Path) -> list[dict]:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        if key.startswith("CUSTOM_") and value.strip():
+        if key in skip:
+            continue
+        if value.strip():
             result.append({
                 "secret_name": f"{prefix}_{key.lower()}",
                 "env_var": key,
