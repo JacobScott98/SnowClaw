@@ -1,5 +1,5 @@
 ARG OPENCLAW_VERSION=latest
-FROM --platform=linux/amd64 ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
 # Stage default files into a defaults directory so the entrypoint can
 # seed them into the volume-mounted OPENCLAW_HOME on first run.
@@ -11,14 +11,16 @@ COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 # to initialize the binary, which fails under QEMU (exit 132 / SIGILL) when
 # cross-building amd64 images on Apple Silicon.  We replicate the install
 # steps without that final exec so the image builds cleanly on any host.
+ARG TARGETARCH
 RUN set -e \
     && S3_BUCKET="sfc-repo.snowflakecomputing.com" \
     && S3_PREFIX="cortex-code-cli/a4643c4278" \
+    && ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-amd64") \
     && VERSION=$(curl -fsSL "https://${S3_BUCKET}/${S3_PREFIX}/stable_version.txt" | tr -d '[:space:]') \
     && ENCODED_VERSION=$(echo "$VERSION" | sed 's/+/%2B/g') \
     && MANIFEST_URL="https://${S3_BUCKET}/${S3_PREFIX}/${ENCODED_VERSION}/manifest.json" \
     && MANIFEST=$(curl -fsSL "$MANIFEST_URL") \
-    && TAR_NAME=$(echo "$MANIFEST" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*linux-amd64\.tar\.gz"' | head -1 | grep -o '"[^"]*\.tar\.gz"' | tr -d '"') \
+    && TAR_NAME=$(echo "$MANIFEST" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*'"${ARCH_SUFFIX}"'\.tar\.gz"' | head -1 | grep -o '"[^"]*\.tar\.gz"' | tr -d '"') \
     && ENCODED_TAR=$(echo "$TAR_NAME" | sed 's/+/%2B/g') \
     && DOWNLOAD_URL="https://${S3_BUCKET}/${S3_PREFIX}/${ENCODED_VERSION}/${ENCODED_TAR}" \
     && INSTALL_DIR="$HOME/.local/share/cortex/${VERSION}" \
