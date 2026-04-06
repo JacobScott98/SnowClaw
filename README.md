@@ -184,6 +184,7 @@ Add this to your external OpenClaw's `openclaw.json`:
         baseUrl: "https://<proxy-endpoint>/v1",
         apiKey: "${SNOWFLAKE_TOKEN}",
         headers: {
+          "Authorization": "Snowflake Token=\"${SNOWFLAKE_TOKEN}\"",
           "X-Cortex-Token": "${SNOWFLAKE_TOKEN}"
         },
         api: "openai-completions",
@@ -197,7 +198,7 @@ Add this to your external OpenClaw's `openclaw.json`:
 }
 ```
 
-- `apiKey` authenticates with SPCS ingress (sent as `Authorization: Snowflake Token="..."`)
+- `Authorization` authenticates with SPCS ingress (must be `Snowflake Token="..."` format)
 - `X-Cortex-Token` passes through ingress to the proxy, which forwards it to Cortex
 - Each user's PAT provides per-user identity and traceability via `Sf-Context-Current-User`
 

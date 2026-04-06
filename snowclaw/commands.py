@@ -1933,31 +1933,40 @@ def _proxy_deploy(args: argparse.Namespace):
     console.print("[green]Proxy deployment complete.[/green]")
 
     # Print OpenClaw provider config snippet
-    base_url = f"{endpoint_url}/v1" if endpoint_url else "https://<proxy-endpoint>/v1"
+    if endpoint_url:
+        base_url = f"{endpoint_url}/v1"
+    else:
+        base_url = "https://<proxy-endpoint>/v1"
     console.print()
-    console.print(Panel(
-        '[bold]Add this to your openclaw.json to connect through the proxy:[/bold]\n\n'
-        '[cyan]{\n'
+    console.print("[bold]Add this to your openclaw.json to connect through the proxy:[/bold]\n")
+    config_json = (
+        '{\n'
         '  "models": {\n'
         '    "providers": {\n'
         '      "cortex": {\n'
         f'        "baseUrl": "{base_url}",\n'
         '        "apiKey": "$SNOWFLAKE_TOKEN",\n'
         '        "headers": {\n'
+        '          "Authorization": "Snowflake Token=\\"$SNOWFLAKE_TOKEN\\"",\n'
         '          "X-Cortex-Token": "$SNOWFLAKE_TOKEN"\n'
         '        },\n'
         '        "api": "openai-completions"\n'
         '      }\n'
         '    }\n'
         '  }\n'
-        '}[/cyan]\n\n'
-        '[dim]Each user authenticates to the endpoint with their own PAT.\n'
-        'The apiKey handles SPCS ingress auth, while X-Cortex-Token\n'
-        'is passed through to Cortex for the actual LLM request.[/dim]',
-        title="OpenClaw Provider Config",
-        border_style="green",
-        expand=False,
-    ))
+        '}'
+    )
+    console.print(config_json)
+    if not endpoint_url:
+        console.print(
+            "\n[dim]Endpoint URL is still provisioning."
+            " Run [cyan]snowclaw proxy status[/cyan] to get it once ready.[/dim]"
+        )
+    console.print(
+        '\n[dim]Each user authenticates with their own PAT.\n'
+        'Authorization handles SPCS ingress auth, while X-Cortex-Token\n'
+        'is passed through to Cortex for the actual LLM request.[/dim]'
+    )
 
 
 def _proxy_status(args: argparse.Namespace):
