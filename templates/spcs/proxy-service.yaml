@@ -1,0 +1,17 @@
+spec:
+  containers:
+    - name: cortex-proxy
+      image: /__SNOWCLAW_DB__/__SNOWCLAW_SCHEMA__/__SNOWCLAW_PREFIX___repo/snowclaw-proxy:latest
+      env:
+        CORTEX_BASE_URL: https://__SNOWCLAW_ACCOUNT__.snowflakecomputing.com/api/v2/cortex/v1
+      resources:
+        requests:
+          cpu: 0.5
+          memory: 2Gi
+        limits:
+          cpu: 0.5
+          memory: 2Gi
+  endpoints:
+    - name: cortex-proxy
+      port: 8080
+      public: true

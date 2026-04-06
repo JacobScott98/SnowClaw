@@ -16,7 +16,7 @@ from snowclaw.network import (
     get_env_secrets,
     load_network_rules,
 )
-from snowclaw.utils import console, get_templates_dir, read_marker, sf_names
+from snowclaw.utils import console, get_templates_dir, read_marker, sf_names, sf_proxy_names
 
 
 DOCKER_COMPOSE_TEMPLATE = """\
@@ -290,5 +290,46 @@ def assemble_build_context(root: Path) -> Path:
             (spcs_dir / "network-rules.sql").write_text(
                 header + ";\n\n".join(stmts) + ";\n"
             )
+
+    return build_dir
+
+
+def assemble_proxy_build_context(root: Path) -> Path:
+    """Generate .snowclaw/build-proxy/ for standalone proxy deployment.
+
+    Only includes the proxy source and the proxy-specific service.yaml.
+    Returns the path to the build directory.
+    """
+    marker = read_marker(root)
+    database = marker.get("database", "snowclaw_db")
+    schema_name = marker.get("schema", "snowclaw_schema")
+    account = marker.get("account", "")
+    prefix = re.sub(r"_db$", "", database.lower())
+    templates = get_templates_dir()
+
+    build_dir = root / ".snowclaw" / "build-proxy"
+
+    # Clean and recreate
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
+
+    # Copy proxy/ from CLI repo
+    cli_root = templates.parent
+    proxy_src = cli_root / "proxy"
+    if proxy_src.is_dir():
+        shutil.copytree(proxy_src, build_dir / "proxy")
+
+    # Copy and substitute proxy-service.yaml
+    spcs_dir = build_dir / "spcs"
+    spcs_dir.mkdir()
+
+    svc_src = templates / "spcs" / "proxy-service.yaml"
+    content = svc_src.read_text()
+    content = content.replace("__SNOWCLAW_DB__", database)
+    content = content.replace("__SNOWCLAW_SCHEMA__", schema_name)
+    content = content.replace("__SNOWCLAW_PREFIX__", prefix)
+    content = content.replace("__SNOWCLAW_ACCOUNT__", account)
+    (spcs_dir / "proxy-service.yaml").write_text(content)
 
     return build_dir

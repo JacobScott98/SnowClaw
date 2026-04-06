@@ -42,6 +42,26 @@ def sf_names(database: str, schema: str) -> dict:
     }
 
 
+def sf_proxy_names(database: str, schema: str) -> dict:
+    """Derive Snowflake object names for standalone proxy deployment.
+
+    Uses a ``_proxy_`` infix on pool/service/egress/external-access names
+    so they don't collide with a full SnowClaw deployment in the same schema.
+    """
+    prefix = re.sub(r"_db$", "", database.lower())
+    return {
+        "db": database,
+        "schema": f"{database}.{schema}",
+        "schema_name": schema,
+        "prefix": prefix,
+        "repo": f"{prefix}_repo",
+        "egress_rule": f"{prefix}_proxy_egress_rule",
+        "external_access": f"{prefix}_proxy_external_access",
+        "pool": f"{prefix}_proxy_pool",
+        "service": f"{prefix}_proxy_service",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
