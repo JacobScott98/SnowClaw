@@ -55,10 +55,25 @@ async def chat_completions(request: Request) -> Response:
     base_url = get_cortex_base_url()
     upstream_url = f"{base_url}/chat/completions"
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    auth = request.headers.get("Authorization")
-    if auth:
-        headers["Authorization"] = auth
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+    }
+
+    # Prefer X-Cortex-Token header (survives SPCS ingress stripping),
+    # then fall back to Authorization header (works in local/sidecar mode).
+    cortex_token = request.headers.get("X-Cortex-Token")
+    if cortex_token:
+        headers["Authorization"] = f"Bearer {cortex_token}"
+    else:
+        auth = request.headers.get("Authorization")
+        if auth:
+            # Normalize 'Snowflake Token="<pat>"' → 'Bearer <pat>' for Cortex
+            if auth.startswith("Snowflake Token="):
+                token = auth.split("=", 1)[1].strip('" ')
+                headers["Authorization"] = f"Bearer {token}"
+            else:
+                headers["Authorization"] = auth
 
     is_streaming = transformed.get("stream", False)
     client = _get_client()

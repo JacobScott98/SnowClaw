@@ -13,6 +13,7 @@ from snowclaw.commands import (
     cmd_logs,
     cmd_model,
     cmd_network,
+    cmd_proxy,
     cmd_pull,
     cmd_push,
     cmd_restart,
@@ -104,6 +105,22 @@ def build_parser() -> argparse.ArgumentParser:
     model_sub.add_parser("list", help="List available models")
     model_sub.add_parser("set", help="Change the default model")
 
+    # --- snowclaw proxy ---
+    proxy_parser = sub.add_parser(
+        "proxy", help="Deploy a standalone Cortex proxy for external OpenClaw agents"
+    )
+    proxy_sub = proxy_parser.add_subparsers(dest="proxy_command")
+
+    proxy_sub.add_parser("setup", help="Interactive setup wizard for standalone proxy")
+    proxy_sub.add_parser("deploy", help="Build, push, and deploy standalone proxy to SPCS")
+    proxy_sub.add_parser("status", help="Show standalone proxy service status and endpoint")
+    proxy_sub.add_parser("suspend", help="Suspend the standalone proxy service and compute pool")
+    proxy_sub.add_parser("resume", help="Resume the standalone proxy compute pool and service")
+
+    proxy_logs_parser = proxy_sub.add_parser("logs", help="Show standalone proxy container logs")
+    proxy_logs_parser.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines (default: 100)")
+    proxy_logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
+
     return parser
 
 
@@ -126,6 +143,7 @@ def main():
         "network": cmd_network,
         "channel": cmd_channel,
         "model": cmd_model,
+        "proxy": cmd_proxy,
         "logs": cmd_logs,
         "upgrade": cmd_upgrade,
     }
