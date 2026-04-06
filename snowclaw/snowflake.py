@@ -122,8 +122,8 @@ def run_snowflake_setup(settings: dict):
 def build_proxy_setup_statements(names: dict) -> list[str]:
     """Build SQL statements for standalone proxy Snowflake objects.
 
-    No state stage or secrets — the proxy receives PAT from clients
-    via the Authorization header.
+    No secrets needed — each user passes their own PAT via the
+    X-Cortex-Token header which survives SPCS ingress stripping.
     """
     s = names["schema"]
     return [

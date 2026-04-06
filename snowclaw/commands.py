@@ -639,16 +639,26 @@ def cmd_deploy(args: argparse.Namespace):
         console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
         raise
 
-    alter_sql = (
+    alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
-        f"FROM SPECIFICATION '{escaped_spec}' "
-        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+        f"FROM SPECIFICATION '{escaped_spec}'"
     )
     try:
-        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE")
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
     except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
         raise
 
     # Show endpoints
@@ -848,16 +858,26 @@ def cmd_push(args: argparse.Namespace):
     service_fqn = f"{fqn_schema}.{service_name}"
 
     external_access = names["external_access"]
-    alter_sql = (
+    alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {service_fqn} "
-        f"FROM SPECIFICATION '{escaped_spec}' "
-        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+        f"FROM SPECIFICATION '{escaped_spec}'"
     )
     try:
-        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE")
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
     except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {service_fqn} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
         raise
 
     # Restart service (suspend + resume) to apply changes
@@ -1858,20 +1878,31 @@ def _proxy_deploy(args: argparse.Namespace):
         console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
         raise
 
-    alter_sql = (
+    alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
-        f"FROM SPECIFICATION '{escaped_spec}' "
-        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+        f"FROM SPECIFICATION '{escaped_spec}'"
     )
     try:
-        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE")
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
     except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
         raise
 
     # Show endpoints
     console.print()
+    endpoint_url = None
     console.print("[bold]Proxy endpoint:[/bold]")
     try:
         data = snowflake_rest_execute(
@@ -1891,6 +1922,7 @@ def _proxy_deploy(args: argparse.Namespace):
             for row in rows:
                 ep_url = row[url_idx] if url_idx < len(row) else "?"
                 link = ep_url if ep_url.startswith("http") else f"https://{ep_url}"
+                endpoint_url = link
                 console.print(f"  [link={link}][cyan]{ep_url}[/cyan][/link]")
         else:
             console.print("  [dim]Endpoint not yet available. Check [cyan]snowclaw proxy status[/cyan] shortly.[/dim]")
@@ -1899,7 +1931,33 @@ def _proxy_deploy(args: argparse.Namespace):
 
     console.print()
     console.print("[green]Proxy deployment complete.[/green]")
-    console.print("[dim]Configure your external OpenClaw agent to use the endpoint URL above as the provider baseUrl.[/dim]")
+
+    # Print OpenClaw provider config snippet
+    base_url = f"{endpoint_url}/v1" if endpoint_url else "https://<proxy-endpoint>/v1"
+    console.print()
+    console.print(Panel(
+        '[bold]Add this to your openclaw.json to connect through the proxy:[/bold]\n\n'
+        '[cyan]{\n'
+        '  "models": {\n'
+        '    "providers": {\n'
+        '      "cortex": {\n'
+        f'        "baseUrl": "{base_url}",\n'
+        '        "apiKey": "$SNOWFLAKE_TOKEN",\n'
+        '        "headers": {\n'
+        '          "X-Cortex-Token": "$SNOWFLAKE_TOKEN"\n'
+        '        },\n'
+        '        "api": "openai-completions"\n'
+        '      }\n'
+        '    }\n'
+        '  }\n'
+        '}[/cyan]\n\n'
+        '[dim]Each user authenticates to the endpoint with their own PAT.\n'
+        'The apiKey handles SPCS ingress auth, while X-Cortex-Token\n'
+        'is passed through to Cortex for the actual LLM request.[/dim]',
+        title="OpenClaw Provider Config",
+        border_style="green",
+        expand=False,
+    ))
 
 
 def _proxy_status(args: argparse.Namespace):
