@@ -34,6 +34,7 @@ snowclaw/                    # CLI repo (installed via pipx)
       docker-entrypoint.sh   # Config lockdown (root), privilege drop to node, startup
     spcs/
       service.yaml           # SPCS service spec (two containers, dynamic secrets)
+      proxy-service.yaml     # SPCS service spec (standalone proxy, single container)
       image-repo.sql         # SQL: database, schema, image repo, stage, secrets, compute pool
     plugins/
       cortex-tools/          # OpenClaw plugin: SQL queries + Cortex functions (stub)
@@ -117,6 +118,12 @@ Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx 
 | `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply |
 | `snowclaw network detect` | Auto-detect rules from config, show diff, optionally save and apply |
 | `snowclaw network apply` | Push all saved rules to Snowflake |
+| `snowclaw proxy setup` | Interactive wizard for standalone Cortex proxy deployment |
+| `snowclaw proxy deploy` | Build, push, and deploy standalone proxy to SPCS |
+| `snowclaw proxy status` | Show standalone proxy service status and endpoint |
+| `snowclaw proxy suspend` | Suspend standalone proxy service and compute pool |
+| `snowclaw proxy resume` | Resume standalone proxy compute pool and service |
+| `snowclaw proxy logs` | Show standalone proxy container logs |
 | `snowclaw` (bare) | Defaults to `setup` |
 
 ### Installation
@@ -136,9 +143,17 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 - `connections.toml` uses PAT auth (`authenticator = "PROGRAMMATIC_ACCESS_TOKEN"`)
 - Snowflake objects created via REST API (`POST /api/v2/statements`) — no snowsql dependency
 
-## Cortex Proxy Sidecar (`proxy/`)
+## Cortex Proxy (`proxy/`)
 
-A FastAPI proxy that sits between OpenClaw and Snowflake Cortex, normalizing requests and masking secrets.
+A FastAPI proxy that sits between OpenClaw and Snowflake Cortex, normalizing requests and masking secrets. Runs as a sidecar in the full deployment or as a standalone SPCS service for external agents.
+
+### Auth handling (`app.py`)
+
+The proxy resolves Cortex auth in priority order:
+1. `X-Cortex-Token` header → forwarded as `Bearer <token>` (used in standalone mode — survives SPCS ingress stripping)
+2. `Authorization` header → normalized from `Snowflake Token="..."` to `Bearer <token>` if needed (used in sidecar/local mode)
+
+SPCS ingress strips the `Authorization` header when it contains a Snowflake token but passes custom headers like `X-Cortex-Token` through untouched. This enables per-user PAT passthrough in standalone mode.
 
 ### Request transforms (`transforms.py`)
 
@@ -156,13 +171,13 @@ OpenAI-family models pass through untouched.
 - Scans all outbound message content, tool call arguments, and content arrays
 - Replaces matches with `[REDACTED:VAR_NAME]` (longest-first matching)
 - Skips secrets ≤3 chars
+- No-op when `SNOWCLAW_MASK_VARS` is empty/unset (standalone proxy mode)
 
 ### Integration
 
-- Runs on port 8080 (internal only)
-- OpenClaw's Cortex provider `baseUrl` points to `http://localhost:8080/v1`
-- In docker-compose: sidecar service alongside OpenClaw
-- In SPCS: second container in the same service spec
+- Runs on port 8080
+- **Sidecar mode**: Internal only, OpenClaw's Cortex provider `baseUrl` points to `http://localhost:8080/v1`. In docker-compose: sidecar service. In SPCS: second container in the same service spec.
+- **Standalone mode**: Public SPCS endpoint on port 8080. External OpenClaw agents connect directly. Deployed via `snowclaw proxy deploy`.
 
 ## Docker
 
@@ -232,6 +247,38 @@ Public endpoint on port 18789.
 - **Channel secrets**: Auto-discovered from enabled channels in `openclaw.json` at deploy time
 - **Custom secrets**: `CUSTOM_` prefixed vars in `.env` → individual Snowflake secrets (`CREATE OR REPLACE SECRET`)
 - **Secret injection**: All secrets dynamically added to `service.yaml` template via placeholder substitution
+
+## Standalone Proxy Deployment
+
+Deploys only the Cortex proxy as a single-container SPCS service with a public endpoint. External OpenClaw agents connect to it for Cortex LLM access without a full SnowClaw deployment.
+
+### How it works
+
+1. User runs `snowclaw proxy setup` in a fresh directory — collects Snowflake credentials, creates DB/schema/image repo/compute pool/network rules
+2. `snowclaw proxy deploy` builds the proxy image, pushes to Snowflake registry, creates single-container SPCS service
+3. External OpenClaw agent configures the proxy URL as its provider `baseUrl` with `headers: { "X-Cortex-Token": "$SNOWFLAKE_TOKEN" }`
+
+### Auth flow
+
+- OpenClaw sends `apiKey` as `Authorization: Snowflake Token="<PAT>"` → SPCS ingress authenticates the user and strips the header
+- OpenClaw also sends `X-Cortex-Token: <PAT>` via custom `headers` config → SPCS passes it through
+- SPCS injects `Sf-Context-Current-User` header → per-user traceability
+- Proxy reads `X-Cortex-Token`, forwards as `Authorization: Bearer <PAT>` to Cortex
+
+### Snowflake objects
+
+Uses `_proxy_` infix naming to avoid collision with full deployments:
+- Image repo: `{prefix}_repo` (shared with full deployment)
+- Compute pool: `{prefix}_proxy_pool` (CPU_X64_XS — minimal)
+- Network rule: `{prefix}_proxy_egress_rule` (`*.snowflakecomputing.com:443`)
+- External access integration: `{prefix}_proxy_external_access`
+- Service: `{prefix}_proxy_service`
+
+No secrets, no state stage — each user provides their own PAT via header.
+
+### Service spec (`spcs/proxy-service.yaml`)
+
+Single container, public endpoint on port 8080, no volumes, no secrets, no masking.
 
 ## Model Provider
 
@@ -326,6 +373,21 @@ Channels (Slack/Telegram/Discord) <--> SPCS Ingress <--> OpenClaw Gateway (port 
 ```
 
 All frontend traffic is same-origin. SPCS exposes one ingress endpoint. The proxy is internal only (not exposed to ingress).
+
+### Standalone proxy architecture
+
+```
+External OpenClaw Agent --> SPCS Ingress (auth + Sf-Context-Current-User)
+                              |
+                              +-- Cortex Proxy (port 8080, public endpoint)
+                                    +-- X-Cortex-Token → Bearer auth
+                                    +-- Request transforms
+                                    +-- Rate limit retry (429 backoff)
+                                    |
+                                    +-- Snowflake Cortex LLMs
+```
+
+Single container, public endpoint. No masking, no secrets, no volumes. Each user authenticates with their own PAT.
 
 ## Phased Rollout
 

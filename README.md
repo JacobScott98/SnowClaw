@@ -49,7 +49,7 @@ SnowClaw is designed to be safe to run in your Snowflake account by default.
 - **Secrets & credential management** — All secrets live in your local `.env` file and are uploaded to Snowflake as individual SECRET objects on every `deploy` or `push`. Nothing is baked into the Docker image. Add any custom environment variable to `.env` and it automatically becomes a Snowflake secret, mounted into the container at runtime. See [Secrets & Credentials](#secrets--credentials) for details.
 - **Snowflake Cortex LLMs** — Pre-configured as a provider. Models run inside Snowflake — your data never leaves your account.
 - **Cortex Code** — AI coding assistant installed automatically in the container with a bundled skill definition. Your agent can write, edit, and manage code out of the box.
-- **Cortex proxy sidecar** — A FastAPI proxy between OpenClaw and Cortex that serializes parallel tool calls (fixing Claude model issues), normalizes request parameters across model families, and masks secrets in outbound traffic.
+- **Cortex proxy sidecar** — A FastAPI proxy between OpenClaw and Cortex that serializes parallel tool calls (fixing Claude model issues), normalizes request parameters across model families, and masks secrets in outbound traffic. Can also be deployed as a [standalone proxy](#standalone-proxy) for external OpenClaw agents.
 - **Multi-channel messaging** — Slack, Telegram, and Discord supported out of the box. `snowclaw channel add` walks you through configuration with auto-detected network rules per channel.
 - **Dynamic network rules** — Auto-detects required external hosts from your config and prompts for approval before creating Snowflake network rules and external access integrations.
 - **Build hooks** — Drop `.sh` scripts into `build-hooks/` to install packages or tools at image build time. No Dockerfile editing needed.
@@ -145,8 +145,69 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 | `snowclaw channel add` | Interactive wizard to add a channel |
 | `snowclaw channel edit <name>` | Edit a channel's credentials |
 | `snowclaw channel remove <name>` | Remove a channel |
+| `snowclaw proxy setup` | Interactive wizard for standalone Cortex proxy |
+| `snowclaw proxy deploy` | Build, push, and deploy the standalone proxy to SPCS |
+| `snowclaw proxy status` | Show standalone proxy service status and endpoint |
+| `snowclaw proxy suspend` | Suspend the standalone proxy service and compute pool |
+| `snowclaw proxy resume` | Resume the standalone proxy compute pool and service |
+| `snowclaw proxy logs` | Show standalone proxy container logs |
 
 `push` and `pull` accept `--workspace-only`, `--skills-only`, or `--config-only` to sync selectively.
+
+## Standalone Proxy
+
+The standalone proxy deploys just the Cortex proxy as its own SPCS service with a public endpoint. This lets external OpenClaw agents (running outside Snowflake) access Cortex LLMs through a lightweight gateway — no full SnowClaw deployment required.
+
+### Setup
+
+```bash
+mkdir my-proxy && cd my-proxy
+snowclaw proxy setup    # collects Snowflake credentials, creates objects
+snowclaw proxy deploy   # builds, pushes, and deploys the proxy service
+```
+
+After deploying, `snowclaw proxy deploy` prints the public endpoint URL and a ready-to-use OpenClaw provider config.
+
+### How it works
+
+Each user authenticates to the SPCS endpoint with their own Snowflake PAT. SPCS ingress validates the token and injects `Sf-Context-Current-User` for traceability, but strips the `Authorization` header before it reaches the container. To get the PAT through to Cortex, OpenClaw sends it in a custom `X-Cortex-Token` header which SPCS passes through untouched. The proxy reads this header and forwards it to Cortex as a Bearer token.
+
+### OpenClaw provider config
+
+Add this to your external OpenClaw's `openclaw.json`:
+
+```json5
+{
+  models: {
+    providers: {
+      cortex: {
+        baseUrl: "https://<proxy-endpoint>/v1",
+        apiKey: "${SNOWFLAKE_TOKEN}",
+        headers: {
+          "X-Cortex-Token": "${SNOWFLAKE_TOKEN}"
+        },
+        api: "openai-completions",
+        models: [
+          { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+          { id: "claude-opus-4-6", name: "Claude Opus 4.6" }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `apiKey` authenticates with SPCS ingress (sent as `Authorization: Snowflake Token="..."`)
+- `X-Cortex-Token` passes through ingress to the proxy, which forwards it to Cortex
+- Each user's PAT provides per-user identity and traceability via `Sf-Context-Current-User`
+
+### Features
+
+- **No shared secrets** — each user sends their own PAT, no service-level token needed
+- **Per-user traceability** — SPCS injects `Sf-Context-Current-User` automatically
+- **Rate limit retry** — exponential backoff on Cortex 429 responses
+- **Request transforms** — parallel tool call serialization, max_tokens normalization
+- **Minimal footprint** — single container on CPU_X64_XS compute pool
 
 ## License
 
