@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY config.py transforms.py masking.py app.py ./
+COPY config.py transforms.py masking.py retry.py app.py ./
 
 EXPOSE 8080
 
