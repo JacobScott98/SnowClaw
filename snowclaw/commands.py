@@ -1958,6 +1958,11 @@ def _proxy_deploy(args: argparse.Namespace):
         border_style="green",
         expand=False,
     ))
+    if not endpoint_url:
+        console.print(
+            "\n[dim]Endpoint URL is still provisioning."
+            " Run [cyan]snowclaw proxy status[/cyan] to get it once ready.[/dim]"
+        )
 
 
 def _proxy_status(args: argparse.Namespace):
