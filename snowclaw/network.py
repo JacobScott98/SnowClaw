@@ -72,6 +72,18 @@ PROVIDER_HOSTS: dict[str, list[NetworkRule]] = {
     "cortex": [
         NetworkRule("*.snowflakecomputing.com", 443, "Snowflake Cortex & APIs"),
     ],
+    "dev_infra": [
+        # Package registries
+        NetworkRule("pypi.org", 443, "Python Package Index"),
+        NetworkRule("files.pythonhosted.org", 443, "Python package downloads"),
+        NetworkRule("registry.npmjs.org", 443, "npm package registry"),
+        # Container registries
+        NetworkRule("ghcr.io", 443, "GitHub Container Registry"),
+        NetworkRule("*.docker.io", 443, "Docker Hub"),
+        NetworkRule("production.cloudflare.docker.com", 443, "Docker Hub CDN"),
+        # OpenClaw infrastructure
+        NetworkRule("*.githubusercontent.com", 443, "GitHub raw content & releases"),
+    ],
 }
 
 # Single source of truth for channel hosts, credentials, and config templates.
@@ -238,6 +250,9 @@ def detect_required_rules(root: Path) -> list[NetworkRule]:
 
     # Always need Snowflake access
     rules.extend(PROVIDER_HOSTS["cortex"])
+
+    # Always need dev infrastructure (package registries, container registries, etc.)
+    rules.extend(PROVIDER_HOSTS["dev_infra"])
 
     config_path = root / "openclaw.json"
     if not config_path.exists():
