@@ -640,7 +640,8 @@ def cmd_deploy(args: argparse.Namespace):
 
     alter_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
-        f"FROM SPECIFICATION '{escaped_spec}'"
+        f"FROM SPECIFICATION '{escaped_spec}' "
+        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
     )
     try:
         snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
@@ -845,9 +846,11 @@ def cmd_push(args: argparse.Namespace):
     service_name = names["service"]
     service_fqn = f"{fqn_schema}.{service_name}"
 
+    external_access = names["external_access"]
     alter_sql = (
         f"ALTER SERVICE IF EXISTS {service_fqn} "
-        f"FROM SPECIFICATION '{escaped_spec}'"
+        f"FROM SPECIFICATION '{escaped_spec}' "
+        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
     )
     try:
         snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
