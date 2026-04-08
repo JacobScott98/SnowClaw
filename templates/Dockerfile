@@ -40,12 +40,19 @@ RUN set -e \
 # Switch to root for system-level installs
 USER root
 
-# Install GitHub CLI
+# Install GitHub CLI and Python dev dependencies (pip, venv) in a single layer.
+# python3 + pip + venv let agents/users install Python packages and create
+# virtual environments inside the running container.
+# npm is already available from the base node:24-bookworm image.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && apt-get update && apt-get install -y --no-install-recommends \
+         gh \
+         python3 \
+         python3-pip \
+         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure the openclaw home dir exists with correct ownership so volume mounts work
