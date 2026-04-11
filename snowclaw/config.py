@@ -31,6 +31,112 @@ def provider_for_model(model_id: str) -> str:
     return "cortex-claude" if model_id.startswith("claude") else "cortex-openai"
 
 
+def migrate_openclaw_config(root: Path) -> bool:
+    """Idempotently migrate an existing openclaw.json to the cortex-claude/cortex-openai split.
+
+    Pre-existing projects have a single `cortex` provider (openai-completions) and
+    `agents.defaults.model = "cortex/<id>"`. This function:
+
+      1. Splits `cortex` → `cortex-openai` (openai-completions) + `cortex-claude`
+         (anthropic-messages), preserving any user-added models in their original
+         entries (Claude models go to cortex-claude, everything else to cortex-openai).
+      2. Rewrites `agents.defaults.model` and any per-agent `agents.<name>.model`
+         that starts with `cortex/` to use the correct new prefix.
+      3. Adds `agents.defaults.params.cacheRetention = "long"` if no params block exists.
+
+    No-op if `cortex-claude` is already present (already migrated) or if no
+    `openclaw.json` exists. Returns True iff a migration was performed.
+    """
+    config_path = root / "openclaw.json"
+    if not config_path.exists():
+        return False
+
+    try:
+        config = json.loads(config_path.read_text())
+    except json.JSONDecodeError:
+        return False
+
+    providers = config.get("models", {}).get("providers", {})
+
+    # Already migrated — bail out fast.
+    if "cortex-claude" in providers:
+        return False
+
+    # Nothing to migrate if there's no old `cortex` provider either.
+    if "cortex" not in providers:
+        return False
+
+    old_cortex = providers.pop("cortex")
+    old_models = old_cortex.get("models", []) or []
+
+    # Split user's existing model list by id. Preserve the original entries verbatim
+    # so any custom contextWindow / maxTokens overrides survive the migration.
+    claude_models = [m for m in old_models if str(m.get("id", "")).startswith("claude")]
+    other_models = [m for m in old_models if not str(m.get("id", "")).startswith("claude")]
+
+    # If the old provider had no Claude entries (unusual but possible), seed with the
+    # canonical Claude list so users still get the new endpoint.
+    if not claude_models:
+        claude_models = list(CORTEX_CLAUDE_MODELS)
+
+    api_key = old_cortex.get("apiKey", "${SNOWFLAKE_TOKEN}")
+
+    providers["cortex-openai"] = {
+        "baseUrl": "http://localhost:8080/v1",
+        "apiKey": api_key,
+        "api": "openai-completions",
+        "models": other_models or list(CORTEX_OPENAI_MODELS),
+    }
+    providers["cortex-claude"] = {
+        "baseUrl": "http://localhost:8080",
+        "apiKey": api_key,
+        "api": "anthropic-messages",
+        "models": claude_models,
+        "headers": {"anthropic-version": "2023-06-01"},
+    }
+
+    # Re-attach in case the dict literal was created fresh somewhere upstream.
+    config.setdefault("models", {})["providers"] = providers
+
+    # Rewrite agent model references that pinned the old `cortex/` prefix.
+    def _rewrite_model_ref(model_ref: str) -> str:
+        if not isinstance(model_ref, str) or not model_ref.startswith("cortex/"):
+            return model_ref
+        model_id = model_ref.split("/", 1)[1]
+        return f"{provider_for_model(model_id)}/{model_id}"
+
+    agents = config.get("agents", {})
+    defaults = agents.setdefault("defaults", {}) if isinstance(agents, dict) else {}
+    if "model" in defaults:
+        defaults["model"] = _rewrite_model_ref(defaults["model"])
+
+    # Forward-compat: enable cache retention so OpenClaw passes the long-TTL knob through.
+    params = defaults.setdefault("params", {})
+    params.setdefault("cacheRetention", "long")
+
+    # Per-agent overrides (anything other than `defaults`).
+    if isinstance(agents, dict):
+        for agent_name, agent_cfg in agents.items():
+            if agent_name == "defaults" or not isinstance(agent_cfg, dict):
+                continue
+            if "model" in agent_cfg:
+                agent_cfg["model"] = _rewrite_model_ref(agent_cfg["model"])
+
+    config["agents"] = agents
+
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    console.print(
+        "  [yellow]→[/yellow] Migrated [cyan]openclaw.json[/cyan]: "
+        "[dim]cortex →[/dim] cortex-openai + cortex-claude "
+        "[dim](Claude models now use prompt caching)[/dim]"
+    )
+    console.print(
+        "  [dim]Note: if this project is already deployed, run "
+        "`snowclaw push --config-only` then `snowclaw restart` to apply.[/dim]"
+    )
+    return True
+
+
 def write_dotenv(root: Path, settings: dict):
     """Write .env file with all secrets."""
     # Preserve any existing extra vars before overwriting (vars not managed by setup)
