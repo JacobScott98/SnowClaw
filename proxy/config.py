@@ -43,3 +43,12 @@ def get_proxy_port() -> int:
 
 def is_claude_model(model: str) -> bool:
     return model.lower().startswith("claude")
+
+
+def is_response_logging_enabled() -> bool:
+    """Check if detailed Cortex response metadata logging is enabled.
+
+    Set PROXY_LOG_RESPONSES=1 (or "true"/"yes") to enable.
+    """
+    val = os.environ.get("PROXY_LOG_RESPONSES", "").lower()
+    return val in ("1", "true", "yes")

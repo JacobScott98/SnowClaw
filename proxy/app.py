@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,8 +10,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from config import get_cortex_base_url
+from config import get_cortex_base_url, is_response_logging_enabled
 from masking import SecretMasker
+from response_logging import log_response_metadata
 from retry import send_with_retry
 from transforms import transform_request
 
@@ -74,6 +76,12 @@ async def chat_completions(request: Request) -> Response:
             if upstream_resp.status_code != 200:
                 error_body = await upstream_resp.aread()
                 await upstream_resp.aclose()
+                if is_response_logging_enabled():
+                    try:
+                        err_parsed = json.loads(error_body)
+                    except (ValueError, TypeError):
+                        err_parsed = {"raw": error_body.decode("utf-8", errors="replace")}
+                    log_response_metadata(upstream_resp, err_parsed, model)
                 resp_headers: dict[str, str] = {}
                 if retry_count > 0:
                     resp_headers["X-Retry-Count"] = str(retry_count)
@@ -82,6 +90,9 @@ async def chat_completions(request: Request) -> Response:
                     content={"error": error_body.decode("utf-8", errors="replace")},
                     headers=resp_headers,
                 )
+
+            if is_response_logging_enabled():
+                log_response_metadata(upstream_resp, None, model)
 
             async def stream_chunks():
                 try:
@@ -108,13 +119,16 @@ async def chat_completions(request: Request) -> Response:
                 client, "POST", upstream_url,
                 json=transformed, headers=headers, stream=False, model=model,
             )
+            resp_body = resp.json()
             retry_count = getattr(resp, "retry_count", 0)
+            if is_response_logging_enabled():
+                log_response_metadata(resp, resp_body, model)
             resp_headers = {}
             if retry_count > 0:
                 resp_headers["X-Retry-Count"] = str(retry_count)
             return JSONResponse(
                 status_code=resp.status_code,
-                content=resp.json(),
+                content=resp_body,
                 headers=resp_headers,
             )
     except httpx.ConnectError as exc:
