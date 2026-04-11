@@ -9,3 +9,6 @@ build/
 
 .secrets
 .env
+
+# Claude Code local state (worktrees, session files, etc.)
+.claude/

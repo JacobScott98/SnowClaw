@@ -16,7 +16,7 @@ from InquirerPy import inquirer
 from rich.panel import Panel
 
 from snowclaw import __version__
-from snowclaw.config import CORTEX_MODELS, write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.config import CORTEX_MODELS, provider_for_model, write_connections_toml, write_dotenv, write_openclaw_config
 from snowclaw.channels import (
     channel_add,
     channel_edit,
@@ -1464,7 +1464,7 @@ def model_list():
 
     console.print("[bold]Available Cortex models:[/bold]\n")
     for m in CORTEX_MODELS:
-        prefixed = f"cortex:{m['id']}"
+        prefixed = f"{provider_for_model(m['id'])}/{m['id']}"
         marker = " [green]← current[/green]" if prefixed == current else ""
         console.print(f"  {m['name']} [dim]({m['id']})[/dim]{marker}")
     console.print()
@@ -1481,16 +1481,23 @@ def model_set():
     config = json.loads(config_path.read_text())
     current = config.get("agents", {}).get("defaults", {}).get("model", "")
 
+    # Strip whichever provider prefix the current model uses so the picker default lines up.
+    current_id = current
+    for prefix in ("cortex-claude/", "cortex-openai/", "cortex/"):
+        if current.startswith(prefix):
+            current_id = current[len(prefix):]
+            break
+
     selected = inquirer.select(
         message="Select default model:",
         choices=[
             {"name": m["name"], "value": m["id"]}
             for m in CORTEX_MODELS
         ],
-        default=current.removeprefix("cortex/") if current.startswith("cortex/") else None,
+        default=current_id or None,
     ).execute()
 
-    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"cortex/{selected}"
+    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"{provider_for_model(selected)}/{selected}"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     model_name = next((m["name"] for m in CORTEX_MODELS if m["id"] == selected), selected)
     console.print(f"  [green]✓[/green] Default model set to [bold]{model_name}[/bold]")
