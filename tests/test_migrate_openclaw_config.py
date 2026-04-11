@@ -126,6 +126,28 @@ class TestProviderSplit:
         assert params["cacheRetention"] == "short"  # preserved
         assert params["temperature"] == 0.2
 
+    def test_missing_max_tokens_backfilled_with_default(self, tmp_path: Path):
+        """Old configs that predate the maxTokens field should get the standard default."""
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex": {
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
+                            {"id": "openai-gpt-5.1", "name": "GPT-5.1"},
+                        ],
+                    }
+                }
+            },
+            "agents": {"defaults": {"model": "cortex/claude-sonnet-4-6"}},
+        })
+        migrate_openclaw_config(tmp_path)
+        cfg = _read_config(tmp_path)
+        cc_models = cfg["models"]["providers"]["cortex-claude"]["models"]
+        co_models = cfg["models"]["providers"]["cortex-openai"]["models"]
+        assert cc_models[0]["maxTokens"] == 131072
+        assert co_models[0]["maxTokens"] == 131072
+
     def test_custom_models_in_old_provider_preserved_verbatim(self, tmp_path: Path):
         """User-customized contextWindow / maxTokens should survive the split."""
         _write_config(tmp_path, {

@@ -8,13 +8,15 @@ from pathlib import Path
 from snowclaw.network import CHANNEL_REGISTRY, TOOL_REGISTRY
 from snowclaw.utils import console
 
+DEFAULT_MAX_TOKENS = 131072
+
 CORTEX_CLAUDE_MODELS = [
-    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": 131072},
-    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": 131072},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": DEFAULT_MAX_TOKENS},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": DEFAULT_MAX_TOKENS},
 ]
 
 CORTEX_OPENAI_MODELS = [
-    {"id": "openai-gpt-5.1", "name": "GPT-5.1", "contextWindow": 1047576, "maxTokens": 131072},
+    {"id": "openai-gpt-5.1", "name": "GPT-5.1", "contextWindow": 1047576, "maxTokens": DEFAULT_MAX_TOKENS},
 ]
 
 # Combined list — Claude first so the setup wizard's "(Recommended)" marker lands on Claude.
@@ -73,6 +75,13 @@ def migrate_openclaw_config(root: Path) -> bool:
     # so any custom contextWindow / maxTokens overrides survive the migration.
     claude_models = [m for m in old_models if str(m.get("id", "")).startswith("claude")]
     other_models = [m for m in old_models if not str(m.get("id", "")).startswith("claude")]
+
+    # Backfill maxTokens on any model that lacks it — older configs were written before
+    # this field was standard, and without it OpenClaw falls back to a conservative cap
+    # that cuts long Cortex responses short. User-set values are preserved.
+    for model in (*claude_models, *other_models):
+        if isinstance(model, dict):
+            model.setdefault("maxTokens", DEFAULT_MAX_TOKENS)
 
     # If the old provider had no Claude entries (unusual but possible), seed with the
     # canonical Claude list so users still get the new endpoint.
