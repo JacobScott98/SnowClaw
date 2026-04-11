@@ -147,37 +147,75 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/snowclaw/main/install.sh | ba
 
 A FastAPI proxy that sits between OpenClaw and Snowflake Cortex, normalizing requests and masking secrets. Runs as a sidecar in the full deployment or as a standalone SPCS service for external agents.
 
+### Endpoints
+
+The proxy exposes two endpoints, one per provider transport:
+
+| Endpoint                | OpenClaw provider | API field            | Models                          | Caching                                          |
+|-------------------------|-------------------|----------------------|---------------------------------|--------------------------------------------------|
+| `POST /v1/chat/completions` | `cortex-openai`  | `openai-completions` | OpenAI / Snowflake / Llama / Mistral | Automatic, server-side (>1024 tokens)   |
+| `POST /v1/messages` (+ `/messages` alias) | `cortex-claude` | `anthropic-messages` | Claude only                     | OpenClaw injects `cache_control` markers natively |
+
+For Claude models, route via the Messages endpoint — OpenClaw's `anthropic-messages` transport automatically injects `cache_control: {type: "ephemeral"}` markers on system blocks and the trailing user turn, and Cortex's native `/messages` endpoint honors them. The chat-completions path also accepts Claude models via Cortex's translation layer, but provides no caching and triggers extra request transforms (e.g. parallel tool call serialization).
+
 ### Auth handling (`app.py`)
 
-The proxy resolves Cortex auth in priority order:
+**Chat completions endpoint** auth priority:
 1. `X-Cortex-Token` header → forwarded as `Bearer <token>` (used in standalone mode — survives SPCS ingress stripping)
 2. `Authorization` header → normalized from `Snowflake Token="..."` to `Bearer <token>` if needed (used in sidecar/local mode)
 
-SPCS ingress strips the `Authorization` header when it contains a Snowflake token but passes custom headers like `X-Cortex-Token` through untouched. This enables per-user PAT passthrough in standalone mode.
+**Messages endpoint** auth priority (adds `x-api-key` translation for OpenClaw's Anthropic SDK):
+1. `X-Cortex-Token` header → `Bearer <token>` (SPCS standalone mode)
+2. `x-api-key` header → `Bearer <value>` (what OpenClaw's `anthropic-messages` SDK transport sends by default)
+3. `Authorization` header → `Bearer <token>` (Bearer or `Snowflake Token="..."` shape)
+
+The Messages endpoint also forces `anthropic-version: 2023-06-01` on the upstream request — Cortex requires this exact value and we don't depend on the client to send it correctly.
+
+SPCS ingress strips the `Authorization` header when it contains a Snowflake token but passes custom headers like `X-Cortex-Token` and `x-api-key` through untouched. This enables per-user PAT passthrough in standalone mode for both endpoints.
 
 ### Request transforms (`transforms.py`)
 
-Applied to Claude models on Cortex:
-- **Serialize parallel tool calls** — Converts parallel tool_call/tool_result turns into sequential single-call turns (fixes Cortex 400 error)
+**Chat completions endpoint** — applied to Claude models on Cortex:
+- **Serialize parallel tool calls** — Converts parallel tool_call/tool_result turns into sequential single-call turns (fixes Cortex's OpenAI→Anthropic translator)
 - **Strip `parallel_tool_calls`** param
 - **Rewrite `max_tokens` → `max_completion_tokens`** (all models)
 - **Strip `response_format: json_object`** for Claude
 
 OpenAI-family models pass through untouched.
 
+**Messages endpoint** — no request transforms. Anthropic's shape is what Cortex (and Claude) want natively. `max_tokens` is preserved (Anthropic uses it natively), parallel `tool_use` blocks pass through unchanged (verified working against Cortex `/v1/messages`), and `cache_control` markers reach the upstream untouched.
+
 ### Secret masking (`masking.py`)
 
-- Reads `SNOWCLAW_MASK_VARS` env var for list of var names to mask
-- Scans all outbound message content, tool call arguments, and content arrays
-- Replaces matches with `[REDACTED:VAR_NAME]` (longest-first matching)
-- Skips secrets ≤3 chars
+Two walkers, one per request shape:
+
+- `mask_request()` — chat completions / OpenAI shape. Walks `messages[].content` (string or list of blocks), `messages[].tool_calls[].function.arguments`.
+- `mask_messages_request()` — Anthropic Messages shape. Walks top-level `system` (string or text-block list), `messages[].content` blocks (`text`, `tool_use.input` recursively, `tool_result.content`).
+
+Both walkers:
+- Read `SNOWCLAW_MASK_VARS` env var for list of var names to mask
+- Replace matches with `[REDACTED:VAR_NAME]` (longest-first matching)
+- Skip secrets ≤3 chars
 - No-op when `SNOWCLAW_MASK_VARS` is empty/unset (standalone proxy mode)
+- Preserve `cache_control` markers and other block metadata
+
+### Cache stat logging
+
+Non-streaming responses on both endpoints log a single `Cache stats model=... created=N read=N` INFO line when the upstream response includes non-zero `cache_creation_input_tokens` or `cache_read_input_tokens`. Streaming-side stats are not logged in v1.
 
 ### Integration
 
-- Runs on port 8080
-- **Sidecar mode**: Internal only, OpenClaw's Cortex provider `baseUrl` points to `http://localhost:8080/v1`. In docker-compose: sidecar service. In SPCS: second container in the same service spec.
+- Runs on port 8080, serves both endpoints
+- **Sidecar mode**: Internal only. OpenClaw's `cortex-openai` provider points at `http://localhost:8080/v1`; `cortex-claude` provider points at `http://localhost:8080` (the Anthropic SDK appends `/v1/messages` itself, so the host root is the correct `baseUrl`). In docker-compose: sidecar service. In SPCS: second container in the same service spec.
 - **Standalone mode**: Public SPCS endpoint on port 8080. External OpenClaw agents connect directly. Deployed via `snowclaw proxy deploy`.
+
+### Migration note
+
+The single `cortex` provider was renamed and split in this revision: Claude models now live under `cortex-claude` (anthropic-messages API), and OpenAI/Snowflake models under `cortex-openai` (openai-completions API). Re-running `snowclaw setup` regenerates `openclaw.json` with the new shape automatically. Custom agent configs that pin the old `cortex/<model>` prefix need updating to either `cortex-claude/<claude-model>` or `cortex-openai/<other-model>`.
+
+### Known limitation: cache TTL
+
+`agents.defaults.params.cacheRetention` is set to `"long"` in the generated `openclaw.json`, but OpenClaw's policy only upgrades to 1h ephemeral TTL when the upstream host matches `api.anthropic.com` or Vertex (verified in OpenClaw `src/agents/anthropic-payload-policy.ts`). Against the proxy URL, OpenClaw still emits 5-minute ephemeral markers. The 5m caching is the v1 target and works end-to-end. A future enhancement can have the proxy rewrite existing markers' `ttl` field to upgrade to 1h.
 
 ## Docker
 
@@ -282,7 +320,12 @@ Single container, public endpoint on port 8080, no volumes, no secrets, no maski
 
 ## Model Provider
 
-**Snowflake Cortex** — always enabled, sole built-in provider. Requests routed through the proxy sidecar. Uses `$SNOWFLAKE_ACCOUNT` and `$SNOWFLAKE_TOKEN` env vars. Users can add additional providers manually to `openclaw.json`.
+**Snowflake Cortex** — always enabled, sole built-in upstream. Generated `openclaw.json` writes two providers, both backed by the same Cortex proxy on a different endpoint:
+
+- **`cortex-claude`** — `api: "anthropic-messages"`, `baseUrl: http://localhost:8080`. Serves Claude models via Cortex's native `/v1/messages` endpoint. OpenClaw's anthropic transport injects `cache_control` markers automatically.
+- **`cortex-openai`** — `api: "openai-completions"`, `baseUrl: http://localhost:8080/v1`. Serves OpenAI / Snowflake / Llama models via Cortex's `/v1/chat/completions` endpoint.
+
+Both use `$SNOWFLAKE_TOKEN` for auth. Routing happens at config-write time via `provider_for_model()` in `snowclaw/config.py` — Claude models go to `cortex-claude`, everything else to `cortex-openai`. Users can add additional providers manually to `openclaw.json`.
 
 ## Channels (`snowclaw/channels.py`)
 
@@ -363,11 +406,16 @@ Channels (Slack/Telegram/Discord) <--> SPCS Ingress <--> OpenClaw Gateway (port 
                                                             +-- Plugin HTTP routes
                                                             |
                                                             +-- Cortex Proxy (port 8080, sidecar)
-                                                            |     +-- Secret masking
-                                                            |     +-- Request transforms
-                                                            |     +-- SSE streaming passthrough
+                                                            |     +-- POST /v1/chat/completions  →  Cortex /v1/chat/completions
+                                                            |     |     used by cortex-openai (OpenAI / Snowflake / Llama)
                                                             |     |
-                                                            |     +-- Snowflake Cortex LLMs
+                                                            |     +-- POST /v1/messages  →  Cortex /v1/messages
+                                                            |     |     used by cortex-claude (Claude only, native cache_control)
+                                                            |     |
+                                                            |     +-- Secret masking (per-shape walker)
+                                                            |     +-- Request transforms (chat-completions only)
+                                                            |     +-- SSE streaming passthrough
+                                                            |     +-- Cache stat logging
                                                             |
                                                             +-- Cortex Code MCP (plugin route)
 ```

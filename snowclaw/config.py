@@ -8,11 +8,27 @@ from pathlib import Path
 from snowclaw.network import CHANNEL_REGISTRY, TOOL_REGISTRY
 from snowclaw.utils import console
 
-CORTEX_MODELS = [
-    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": 16384},
-    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": 16384},
-    {"id": "openai-gpt-5.1", "name": "GPT-5.1", "contextWindow": 1047576, "maxTokens": 16384},
+CORTEX_CLAUDE_MODELS = [
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": 131072},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": 131072},
 ]
+
+CORTEX_OPENAI_MODELS = [
+    {"id": "openai-gpt-5.1", "name": "GPT-5.1", "contextWindow": 1047576, "maxTokens": 131072},
+]
+
+# Combined list — Claude first so the setup wizard's "(Recommended)" marker lands on Claude.
+CORTEX_MODELS = CORTEX_CLAUDE_MODELS + CORTEX_OPENAI_MODELS
+
+
+def provider_for_model(model_id: str) -> str:
+    """Return the openclaw.json provider id that should serve a given model.
+
+    Claude models are routed through `cortex-claude` (Anthropic Messages API) so
+    OpenClaw's native anthropic transport can inject prompt-cache markers. All
+    other models go through `cortex-openai` (OpenAI chat completions API).
+    """
+    return "cortex-claude" if model_id.startswith("claude") else "cortex-openai"
 
 
 def write_dotenv(root: Path, settings: dict):
@@ -101,6 +117,7 @@ def write_dotenv(root: Path, settings: dict):
 
 def write_openclaw_config(root: Path, settings: dict):
     """Write openclaw.json with provider and channel config."""
+    default_model_id = settings.get("default_model", CORTEX_MODELS[0]["id"])
     config: dict = {
         "gateway": {
             "auth": {
@@ -113,16 +130,34 @@ def write_openclaw_config(root: Path, settings: dict):
         "models": {"providers": {}},
         "channels": {},
         "agents": {"defaults": {
-            "model": f"cortex/{settings.get('default_model', CORTEX_MODELS[0]['id'])}",
+            "model": f"{provider_for_model(default_model_id)}/{default_model_id}",
+            "params": {
+                # Forward-compatible: OpenClaw injects ephemeral cache_control on system + trailing
+                # user blocks. The "long" knob upgrades to 1h TTL only against api.anthropic.com /
+                # Vertex hosts (OpenClaw gates this on hostname); against our proxy it still emits
+                # 5m ephemeral, which is the v1 target. 1h upgrade is a future proxy enhancement.
+                "cacheRetention": "long",
+            },
         }},
     }
 
-    # Cortex provider (always included)
-    config["models"]["providers"]["cortex"] = {
+    # Cortex providers — split by API surface so Claude models can use OpenClaw's native
+    # anthropic-messages transport (auto-injects cache_control markers) while OpenAI / Snowflake
+    # models keep using the OpenAI chat-completions surface. The proxy serves both endpoints.
+    config["models"]["providers"]["cortex-openai"] = {
         "baseUrl": "http://localhost:8080/v1",
         "apiKey": "${SNOWFLAKE_TOKEN}",
         "api": "openai-completions",
-        "models": CORTEX_MODELS,
+        "models": CORTEX_OPENAI_MODELS,
+    }
+    config["models"]["providers"]["cortex-claude"] = {
+        # The Anthropic SDK appends `/v1/messages` to baseUrl, so the host root (no `/v1`) is
+        # the correct value here. Final upstream URL hit by OpenClaw is http://localhost:8080/v1/messages.
+        "baseUrl": "http://localhost:8080",
+        "apiKey": "${SNOWFLAKE_TOKEN}",
+        "api": "anthropic-messages",
+        "models": CORTEX_CLAUDE_MODELS,
+        "headers": {"anthropic-version": "2023-06-01"},
     }
 
     # Channels — generate config block for each enabled channel
