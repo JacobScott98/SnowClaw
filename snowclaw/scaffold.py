@@ -171,8 +171,6 @@ def assemble_build_context(root: Path) -> Path:
             hook_layer + "\n# Ensure the openclaw home dir",
         )
 
-    (build_dir / "Dockerfile").write_text(dockerfile_content)
-
     # Generate docker-compose.yml
     (build_dir / "docker-compose.yml").write_text(DOCKER_COMPOSE_TEMPLATE)
 
@@ -194,10 +192,46 @@ def assemble_build_context(root: Path) -> Path:
     # Create empty workspace/ (not baked from user dir — managed via push/pull)
     (build_dir / "workspace").mkdir()
 
-    # Copy plugins from CLI templates
-    plugins_src = templates / "plugins"
-    if plugins_src.is_dir():
-        shutil.copytree(plugins_src, build_dir / "plugins")
+    # Copy path-based plugins into build context and inject npm install layer
+    from snowclaw.plugins import load_plugins
+
+    configured_plugins = load_plugins(root)
+    path_plugins = [p for p in configured_plugins if p["source"] == "path"]
+    npm_plugins = [p for p in configured_plugins if p["source"] == "npm"]
+
+    if path_plugins:
+        plugins_build_dir = build_dir / "plugins"
+        plugins_build_dir.mkdir()
+        for plugin in path_plugins:
+            plugin_path = root / plugin["path"]
+            if plugin_path.is_dir():
+                shutil.copytree(plugin_path, plugins_build_dir / plugin["id"])
+        # Add COPY layer to Dockerfile for path-based plugins
+        path_layer = (
+            "\n# Path-based OpenClaw plugins\n"
+            "COPY --chown=1000:1000 plugins/ /opt/snowclaw/plugins/\n"
+        )
+        dockerfile_content = dockerfile_content.replace(
+            "# Ensure the openclaw home dir",
+            path_layer + "\n# Ensure the openclaw home dir",
+        )
+
+    if npm_plugins:
+        install_cmds = " && ".join(
+            f'node openclaw.mjs plugins install "{p["package"]}"'
+            for p in npm_plugins
+        )
+        npm_layer = (
+            "\n# OpenClaw plugins (npm)\n"
+            f"RUN {install_cmds}\n"
+        )
+        dockerfile_content = dockerfile_content.replace(
+            "# Ensure the openclaw home dir",
+            npm_layer + "\n# Ensure the openclaw home dir",
+        )
+
+    # Write final Dockerfile (after all layers: build hooks, plugins)
+    (build_dir / "Dockerfile").write_text(dockerfile_content)
 
     # Copy proxy/ from CLI repo into build context
     cli_root = templates.parent

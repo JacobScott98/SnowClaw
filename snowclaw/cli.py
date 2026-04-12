@@ -13,6 +13,7 @@ from snowclaw.commands import (
     cmd_logs,
     cmd_model,
     cmd_network,
+    cmd_plugins,
     cmd_proxy,
     cmd_pull,
     cmd_push,
@@ -99,6 +100,18 @@ def build_parser() -> argparse.ArgumentParser:
     ch_edit_parser = ch_sub.add_parser("edit", help="Edit channel credentials")
     ch_edit_parser.add_argument("name", help="Channel type to edit (e.g. slack, telegram, discord)")
 
+    # --- snowclaw plugins ---
+    plugins_parser = sub.add_parser("plugins", help="Manage OpenClaw plugins")
+    plugins_sub = plugins_parser.add_subparsers(dest="plugins_command")
+
+    plugins_sub.add_parser("list", help="List configured plugins")
+
+    plugins_add_parser = plugins_sub.add_parser("add", help="Add a plugin")
+    plugins_add_parser.add_argument("spec", help="npm package (e.g. @openclaw/voice-call) or local path")
+
+    plugins_remove_parser = plugins_sub.add_parser("remove", help="Remove a plugin")
+    plugins_remove_parser.add_argument("id", help="Plugin id to remove")
+
     # --- snowclaw model ---
     model_parser = sub.add_parser("model", help="View or change the default agent model")
     model_sub = model_parser.add_subparsers(dest="model_command")
@@ -142,6 +155,7 @@ def main():
         "push": cmd_push,
         "network": cmd_network,
         "channel": cmd_channel,
+        "plugins": cmd_plugins,
         "model": cmd_model,
         "proxy": cmd_proxy,
         "logs": cmd_logs,
