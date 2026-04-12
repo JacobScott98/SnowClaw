@@ -6,8 +6,8 @@ import re
 
 import requests
 
-from snowclaw.network import get_channel_secrets
-from snowclaw.utils import console, sf_names, snowflake_rest_execute
+from snowclaw.network import NetworkRule, apply_network_rules, get_channel_secrets
+from snowclaw.utils import console, sf_names, sf_proxy_names, snowflake_rest_execute
 
 
 def build_setup_statements(names: dict) -> list[str]:
@@ -112,3 +112,56 @@ def run_snowflake_setup(settings: dict):
         # Create secrets with actual values
         for stmt, label in secret_stmts:
             _execute(stmt, label)
+
+
+# ---------------------------------------------------------------------------
+# Standalone proxy setup
+# ---------------------------------------------------------------------------
+
+
+def build_proxy_setup_statements(names: dict) -> list[str]:
+    """Build SQL statements for standalone proxy Snowflake objects.
+
+    No secrets needed — each user passes their own PAT via the
+    X-Cortex-Token header which survives SPCS ingress stripping.
+    """
+    s = names["schema"]
+    return [
+        f"CREATE DATABASE IF NOT EXISTS {names['db']}",
+        f"CREATE SCHEMA IF NOT EXISTS {s}",
+        f"CREATE IMAGE REPOSITORY IF NOT EXISTS {s}.{names['repo']}",
+        (
+            f"CREATE COMPUTE POOL IF NOT EXISTS {names['pool']} "
+            "MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS"
+        ),
+    ]
+
+
+def run_proxy_snowflake_setup(settings: dict):
+    """Create Snowflake objects for standalone proxy deployment."""
+    account = settings["account"]
+    pat = settings["pat"]
+    database = settings.get("database", "snowclaw_db")
+    schema = settings.get("schema", "snowclaw_schema")
+    names = sf_proxy_names(database, schema)
+    statements = build_proxy_setup_statements(names)
+
+    def _execute(stmt: str, label: str | None = None):
+        if not label:
+            m = _LABEL_RE.search(stmt)
+            label = m.group(1) if m else stmt[:60]
+        try:
+            snowflake_rest_execute(account, pat, stmt)
+            console.print(f"  [green]✓[/green] {label}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] Failed: {stmt[:80]}...")
+            console.print(f"    [dim]{e}[/dim]")
+            raise
+
+    with console.status("[bold cyan]Creating Snowflake objects..."):
+        for stmt in statements:
+            _execute(stmt)
+
+    # Create network rule for Cortex access
+    cortex_rule = NetworkRule(host="*.snowflakecomputing.com", port=443, reason="Cortex API")
+    apply_network_rules(account, pat, names, [cortex_rule])

@@ -16,7 +16,7 @@ from InquirerPy import inquirer
 from rich.panel import Panel
 
 from snowclaw import __version__
-from snowclaw.config import CORTEX_MODELS, write_connections_toml, write_dotenv, write_openclaw_config
+from snowclaw.config import CORTEX_MODELS, provider_for_model, write_connections_toml, write_dotenv, write_openclaw_config
 from snowclaw.channels import (
     channel_add,
     channel_edit,
@@ -39,8 +39,8 @@ from snowclaw.network import (
     print_diff,
     save_network_rules,
 )
-from snowclaw.scaffold import assemble_build_context, scaffold_user_files
-from snowclaw.snowflake import run_snowflake_setup
+from snowclaw.scaffold import assemble_build_context, assemble_proxy_build_context, scaffold_user_files
+from snowclaw.snowflake import run_proxy_snowflake_setup, run_snowflake_setup
 from snowclaw.utils import (
     console,
     find_project_root,
@@ -49,6 +49,7 @@ from snowclaw.utils import (
     read_marker,
     render_banner,
     sf_names,
+    sf_proxy_names,
     snowflake_rest_execute,
     write_marker,
 )
@@ -638,15 +639,26 @@ def cmd_deploy(args: argparse.Namespace):
         console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
         raise
 
-    alter_sql = (
+    alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
         f"FROM SPECIFICATION '{escaped_spec}'"
     )
     try:
-        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE")
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
     except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
         raise
 
     # Show endpoints
@@ -845,15 +857,27 @@ def cmd_push(args: argparse.Namespace):
     service_name = names["service"]
     service_fqn = f"{fqn_schema}.{service_name}"
 
-    alter_sql = (
+    external_access = names["external_access"]
+    alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {service_fqn} "
         f"FROM SPECIFICATION '{escaped_spec}'"
     )
     try:
-        snowflake_rest_execute(account, token, alter_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE")
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
     except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE failed: {e}")
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {service_fqn} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
         raise
 
     # Restart service (suspend + resume) to apply changes
@@ -1440,7 +1464,7 @@ def model_list():
 
     console.print("[bold]Available Cortex models:[/bold]\n")
     for m in CORTEX_MODELS:
-        prefixed = f"cortex:{m['id']}"
+        prefixed = f"{provider_for_model(m['id'])}/{m['id']}"
         marker = " [green]← current[/green]" if prefixed == current else ""
         console.print(f"  {m['name']} [dim]({m['id']})[/dim]{marker}")
     console.print()
@@ -1457,16 +1481,23 @@ def model_set():
     config = json.loads(config_path.read_text())
     current = config.get("agents", {}).get("defaults", {}).get("model", "")
 
+    # Strip whichever provider prefix the current model uses so the picker default lines up.
+    current_id = current
+    for prefix in ("cortex-claude/", "cortex-openai/", "cortex/"):
+        if current.startswith(prefix):
+            current_id = current[len(prefix):]
+            break
+
     selected = inquirer.select(
         message="Select default model:",
         choices=[
             {"name": m["name"], "value": m["id"]}
             for m in CORTEX_MODELS
         ],
-        default=current.removeprefix("cortex/") if current.startswith("cortex/") else None,
+        default=current_id or None,
     ).execute()
 
-    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"cortex/{selected}"
+    config.setdefault("agents", {}).setdefault("defaults", {})["model"] = f"{provider_for_model(selected)}/{selected}"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     model_name = next((m["name"] for m in CORTEX_MODELS if m["id"] == selected), selected)
     console.print(f"  [green]✓[/green] Default model set to [bold]{model_name}[/bold]")
@@ -1601,3 +1632,629 @@ def cmd_upgrade(args: argparse.Namespace):
         console.print(f"[green]✓[/green] Reinstalled snowclaw {old_version} (version unchanged)")
     else:
         console.print(f"[green]✓[/green] Updated snowclaw: {old_version} → {new_version}")
+
+
+# ---------------------------------------------------------------------------
+# snowclaw proxy — standalone Cortex proxy deployment
+# ---------------------------------------------------------------------------
+
+
+def _load_proxy_context(root: Path) -> dict:
+    """Load Snowflake context using proxy-specific object names."""
+    import os as _os
+    from snowclaw.utils import load_dotenv, load_connections_toml
+
+    marker = read_marker(root)
+    env = {**_os.environ, **load_dotenv(root / ".env")}
+    conn = load_connections_toml(root / "connections.toml")
+
+    database = marker.get("database", env.get("SNOWCLAW_DB", "snowclaw_db"))
+    schema = marker.get("schema", env.get("SNOWCLAW_SCHEMA", "snowclaw_schema"))
+    names = sf_proxy_names(database, schema)
+
+    return {
+        "account": env.get("SNOWFLAKE_ACCOUNT"),
+        "token": env.get("SNOWFLAKE_TOKEN"),
+        "user": env.get("SNOWFLAKE_USER"),
+        "database": database,
+        "schema": schema,
+        "warehouse": env.get("SNOWFLAKE_WAREHOUSE") or conn.get("warehouse"),
+        "names": names,
+        "env": env,
+    }
+
+
+def _proxy_require_creds(ctx: dict):
+    """Exit if required Snowflake credentials are missing."""
+    if not ctx["account"] or not ctx["token"]:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN")
+        sys.exit(1)
+
+
+def _proxy_setup(args: argparse.Namespace):
+    """Interactive setup wizard for standalone Cortex proxy."""
+    render_banner()
+    cwd = Path.cwd()
+
+    # Refuse to scaffold inside the CLI repo itself
+    cli_repo = get_templates_dir().parent
+    if cwd.resolve() == cli_repo.resolve():
+        console.print("[red]Cannot run proxy setup inside the snowclaw CLI repo.[/red]")
+        console.print("Create a new directory and run [cyan]snowclaw proxy setup[/cyan] there:")
+        console.print("  [dim]mkdir my-proxy && cd my-proxy && snowclaw proxy setup[/dim]")
+        sys.exit(1)
+
+    console.print(
+        "[bold]Standalone Cortex Proxy Setup[/bold]\n"
+        "[dim]This deploys a lightweight proxy on SPCS that external OpenClaw agents\n"
+        "can connect to for Cortex LLM access.[/dim]\n"
+    )
+
+    # --- Collect inputs ---
+    account = inquirer.text(
+        message="Snowflake account identifier (orgname-accountname):",
+        validate=lambda v: len(v.strip()) > 0,
+        invalid_message="Account identifier is required.",
+    ).execute().strip()
+
+    sf_user = inquirer.text(
+        message="Snowflake username:",
+        validate=lambda v: len(v.strip()) > 0,
+        invalid_message="Username is required.",
+    ).execute().strip()
+
+    pat = inquirer.secret(
+        message="Programmatic access token (PAT):",
+        validate=lambda v: len(v.strip()) > 0,
+        invalid_message="PAT is required.",
+    ).execute().strip()
+
+    warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute().strip()
+    role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute().strip()
+
+    console.print(
+        "\n[dim]Proxy service objects (image repo, compute pool, network rules) "
+        "will be created in this database and schema.[/dim]\n"
+    )
+    database = inquirer.text(
+        message="Snowflake database:",
+        default="snowclaw_db",
+        validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
+        invalid_message="Database name must be alphanumeric with underscores, starting with a letter.",
+    ).execute().strip()
+    schema = inquirer.text(
+        message="Snowflake schema:",
+        default="snowclaw_schema",
+        validate=lambda v: bool(re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v.strip())),
+        invalid_message="Schema name must be alphanumeric with underscores, starting with a letter.",
+    ).execute().strip()
+
+    # --- Write .snowclaw marker ---
+    root = cwd
+    marker = {
+        "version": __version__,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "account": account,
+        "database": database,
+        "schema": schema,
+        "mode": "proxy",
+    }
+    write_marker(root, marker)
+
+    # --- Write minimal .env ---
+    env_lines = [
+        f"SNOWFLAKE_ACCOUNT={account}",
+        f"SNOWFLAKE_USER={sf_user}",
+        f"SNOWFLAKE_TOKEN={pat}",
+        f"SNOWFLAKE_WAREHOUSE={warehouse}",
+        f"SNOWCLAW_ROLE={role}",
+    ]
+    (root / ".env").write_text("\n".join(env_lines) + "\n")
+    console.print("[green]✓[/green] Wrote .env")
+
+    # --- Write .gitignore ---
+    gitignore = root / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(".env\n.snowclaw/build-proxy/\n")
+        console.print("[green]✓[/green] Wrote .gitignore")
+
+    # --- Optionally create Snowflake objects ---
+    console.print()
+    create_objects = inquirer.confirm(
+        message="Create Snowflake objects now? (database, schema, compute pool, network rules)",
+        default=True,
+    ).execute()
+
+    if create_objects:
+        console.print()
+        settings = {
+            "account": account,
+            "pat": pat,
+            "database": database,
+            "schema": schema,
+        }
+        try:
+            run_proxy_snowflake_setup(settings)
+            console.print()
+            console.print("[green]Snowflake objects created successfully.[/green]")
+        except Exception:
+            console.print("[yellow]Some objects may not have been created. You can retry or create them manually.[/yellow]")
+
+    # --- Summary ---
+    console.print()
+    console.print(Panel(
+        "[bold]Proxy setup complete![/bold]\n\n"
+        "Next steps:\n"
+        "  [cyan]snowclaw proxy deploy[/cyan]    — build and deploy the proxy to SPCS\n"
+        "  [cyan]snowclaw proxy status[/cyan]    — check service status and get the endpoint URL\n\n"
+        "Once deployed, configure your external OpenClaw agent:\n"
+        '  Set provider baseUrl to the proxy\'s public endpoint URL\n'
+        "  Set apiKey to your Snowflake PAT\n",
+        title="What's next",
+        border_style="green",
+        expand=False,
+    ))
+
+
+def _proxy_deploy(args: argparse.Namespace):
+    """Build, push, and deploy standalone proxy to SPCS."""
+    render_banner()
+    root = find_project_root()
+    ctx = _load_proxy_context(root)
+    _proxy_require_creds(ctx)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    sf_user = ctx["user"]
+    names = ctx["names"]
+    env = ctx["env"]
+
+    if not sf_user:
+        console.print("[red]Missing SNOWFLAKE_USER in .env.[/red]")
+        sys.exit(1)
+
+    image_tag = env.get("IMAGE_TAG", "latest")
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    repo = names["repo"]
+    registry_host = f"{account}.registry.snowflakecomputing.com".lower()
+    image_repo = f"{registry_host}/{db}/{schema_name}/{repo}".lower()
+
+    # Assemble proxy build context
+    console.print("[bold]Assembling proxy build context...[/bold]")
+    build_dir = assemble_proxy_build_context(root)
+    console.print(f"  [green]✓[/green] Build context ready")
+    console.print()
+
+    # Docker login
+    console.print("[bold]Authenticating to Snowflake image registry...[/bold]")
+    result = subprocess.run(
+        ["docker", "login", registry_host, "--username", sf_user, "--password-stdin"],
+        input=token,
+        text=True,
+    )
+    if result.returncode != 0:
+        console.print("[red]Docker login failed.[/red]")
+        sys.exit(1)
+    console.print(f"  [green]✓[/green] Logged in to {registry_host}")
+
+    # Build proxy image
+    console.print()
+    console.print("[bold]Building proxy image...[/bold]")
+    result = subprocess.run(
+        ["docker", "build", "--platform", "linux/amd64", "-t", f"snowclaw-proxy:{image_tag}", str(build_dir / "proxy")],
+    )
+    if result.returncode != 0:
+        console.print("[red]Proxy build failed.[/red]")
+        sys.exit(1)
+    console.print(f"  [green]✓[/green] Built snowclaw-proxy:{image_tag}")
+
+    # Tag and push
+    full_proxy_image = f"{image_repo}/snowclaw-proxy:{image_tag}"
+    console.print()
+    console.print("[bold]Pushing proxy to Snowflake image repository...[/bold]")
+    subprocess.run(["docker", "tag", f"snowclaw-proxy:{image_tag}", full_proxy_image], check=True)
+    result = subprocess.run(["docker", "push", full_proxy_image])
+    if result.returncode != 0:
+        console.print("[red]Proxy push failed.[/red]")
+        sys.exit(1)
+    console.print(f"  [green]✓[/green] Pushed {full_proxy_image}")
+
+    # Create/alter SPCS service
+    console.print()
+    console.print("[bold]Creating/updating SPCS proxy service...[/bold]")
+    service_spec = (build_dir / "spcs" / "proxy-service.yaml").read_text()
+    service_name = names["service"]
+    pool = names["pool"]
+    external_access = names["external_access"]
+
+    escaped_spec = service_spec.replace("'", "''")
+    create_sql = (
+        f"CREATE SERVICE IF NOT EXISTS {fqn_schema}.{service_name} "
+        f"IN COMPUTE POOL {pool} "
+        f"FROM SPECIFICATION '{escaped_spec}' "
+        f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, create_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] CREATE SERVICE")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
+        raise
+
+    alter_spec_sql = (
+        f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
+        f"FROM SPECIFICATION '{escaped_spec}'"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+        raise
+
+    alter_eai_sql = (
+        f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
+        f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
+    )
+    try:
+        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
+        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
+        raise
+
+    # Show endpoints
+    console.print()
+    endpoint_url = None
+    console.print("[bold]Proxy endpoint:[/bold]")
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"SHOW ENDPOINTS IN SERVICE {fqn_schema}.{service_name}",
+            database=db, schema=schema_name,
+        )
+        rows = data.get("data", [])
+        if rows:
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            col_map = {c: i for i, c in enumerate(columns)}
+            url_idx = col_map.get("INGRESS_URL", col_map.get("URL", 1))
+
+            for row in rows:
+                ep_url = row[url_idx] if url_idx < len(row) else "?"
+                link = ep_url if ep_url.startswith("http") else f"https://{ep_url}"
+                endpoint_url = link
+                console.print(f"  [link={link}][cyan]{ep_url}[/cyan][/link]")
+        else:
+            console.print("  [dim]Endpoint not yet available. Check [cyan]snowclaw proxy status[/cyan] shortly.[/dim]")
+    except requests.HTTPError:
+        console.print("  [dim]Could not retrieve endpoints yet.[/dim]")
+
+    console.print()
+    console.print("[green]Proxy deployment complete.[/green]")
+
+    # Print OpenClaw provider config snippet
+    base_url = f"{endpoint_url}/v1" if endpoint_url else "https://<proxy-endpoint>/v1"
+    console.print()
+    console.print(Panel(
+        '[bold]Add this to your openclaw.json to connect through the proxy:[/bold]\n\n'
+        '[cyan]{\n'
+        '  "models": {\n'
+        '    "providers": {\n'
+        '      "cortex": {\n'
+        f'        "baseUrl": "{base_url}",\n'
+        '        "apiKey": "$SNOWFLAKE_TOKEN",\n'
+        '        "headers": {\n'
+        '          "X-Cortex-Token": "$SNOWFLAKE_TOKEN"\n'
+        '        },\n'
+        '        "api": "openai-completions"\n'
+        '      }\n'
+        '    }\n'
+        '  }\n'
+        '}[/cyan]\n\n'
+        '[dim]Each user authenticates to the endpoint with their own PAT.\n'
+        'The apiKey handles SPCS ingress auth, while X-Cortex-Token\n'
+        'is passed through to Cortex for the actual LLM request.[/dim]',
+        title="OpenClaw Provider Config",
+        border_style="green",
+        expand=False,
+    ))
+    if not endpoint_url:
+        console.print(
+            "\n[dim]Endpoint URL is still provisioning."
+            " Run [cyan]snowclaw proxy status[/cyan] to get it once ready.[/dim]"
+        )
+
+
+def _proxy_status(args: argparse.Namespace):
+    """Show standalone proxy service status and endpoint."""
+    render_banner()
+    root = find_project_root()
+    ctx = _load_proxy_context(root)
+    _proxy_require_creds(ctx)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    STATUS_COLORS = {
+        "RUNNING": "[green]RUNNING[/green]",
+        "READY": "[green]READY[/green]",
+        "ACTIVE": "[green]ACTIVE[/green]",
+        "PENDING": "[yellow]PENDING[/yellow]",
+        "STARTING": "[yellow]STARTING[/yellow]",
+        "IDLE": "[yellow]IDLE[/yellow]",
+        "SUSPENDING": "[yellow]SUSPENDING[/yellow]",
+        "RESUMING": "[yellow]RESUMING[/yellow]",
+        "FAILED": "[red]FAILED[/red]",
+        "SUSPENDED": "[red]SUSPENDED[/red]",
+    }
+
+    def fmt_status(status: str) -> str:
+        return STATUS_COLORS.get(status.upper(), f"[dim]{status}[/dim]")
+
+    # --- Service Status ---
+    console.print(f"[bold]Proxy Service:[/bold] {service_name}")
+    service_ok = False
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE SERVICE {fqn_schema}.{service_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            service_ok = True
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            status_val = row[col_map["STATUS"]] if "STATUS" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]  {fmt_status(status_val)}")
+
+            if "CREATED_ON" in col_map:
+                console.print(f"[bold]Created:[/bold] [dim]{row[col_map['CREATED_ON']]}[/dim]")
+        else:
+            console.print("[bold]Status:[/bold]  [red]No data returned[/red]")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]  [red]Service not found[/red]")
+        console.print("[dim]Deploy with [cyan]snowclaw proxy deploy[/cyan] first.[/dim]")
+
+    # --- Endpoint ---
+    console.print()
+    if service_ok:
+        try:
+            data = snowflake_rest_execute(
+                account, token,
+                f"SHOW ENDPOINTS IN SERVICE {fqn_schema}.{service_name}",
+                database=db, schema=schema_name,
+            )
+            rows = data.get("data", [])
+            if rows:
+                columns = [
+                    col["name"].upper()
+                    for col in data.get("resultSetMetaData", {}).get("rowType", [])
+                ]
+                col_map = {c: i for i, c in enumerate(columns)}
+                url_idx = col_map.get("INGRESS_URL", col_map.get("URL", 1))
+
+                console.print("[bold]Endpoint:[/bold]")
+                for row in rows:
+                    ep_url = row[url_idx] if url_idx < len(row) else "?"
+                    link = ep_url if ep_url.startswith("http") else f"https://{ep_url}"
+                    console.print(f"  [link={link}][cyan]{ep_url}[/cyan][/link]")
+            else:
+                console.print("[bold]Endpoint:[/bold] [dim]Not available yet[/dim]")
+        except requests.HTTPError:
+            console.print("[bold]Endpoint:[/bold] [dim]Could not retrieve[/dim]")
+    else:
+        console.print("[bold]Endpoint:[/bold] [dim]N/A (service not found)[/dim]")
+
+    # --- Compute Pool ---
+    console.print()
+    console.print(f"[bold]Compute Pool:[/bold] {pool_name}")
+    try:
+        data = snowflake_rest_execute(
+            account, token,
+            f"DESCRIBE COMPUTE POOL {pool_name}",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows:
+            columns = [
+                col["name"].upper()
+                for col in data.get("resultSetMetaData", {}).get("rowType", [])
+            ]
+            row = rows[0]
+            col_map = {c: i for i, c in enumerate(columns)}
+
+            pool_status = row[col_map["STATE"]] if "STATE" in col_map else "UNKNOWN"
+            console.print(f"[bold]Status:[/bold]       {fmt_status(pool_status)}")
+
+            if "INSTANCE_FAMILY" in col_map:
+                console.print(f"[bold]Instance:[/bold]     {row[col_map['INSTANCE_FAMILY']]}")
+            if "MIN_NODES" in col_map and "MAX_NODES" in col_map:
+                min_n = row[col_map["MIN_NODES"]]
+                max_n = row[col_map["MAX_NODES"]]
+                console.print(f"[bold]Nodes:[/bold]        {min_n}/{max_n} (min/max)")
+    except requests.HTTPError:
+        console.print("[bold]Status:[/bold]       [red]Compute pool not found[/red]")
+
+    console.print()
+
+
+def _proxy_suspend(args: argparse.Namespace):
+    """Suspend the standalone proxy service and compute pool."""
+    render_banner()
+    root = find_project_root()
+    ctx = _load_proxy_context(root)
+    _proxy_require_creds(ctx)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    console.print(f"[bold]Suspending proxy service {service_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {fqn_schema}.{service_name} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend service: {e}")
+        sys.exit(1)
+
+    console.print(f"[bold]Suspending compute pool {pool_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER COMPUTE POOL {pool_name} SUSPEND",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Compute pool suspended")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to suspend compute pool: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Proxy suspended.[/green]")
+
+
+def _proxy_resume(args: argparse.Namespace):
+    """Resume the standalone proxy compute pool and service."""
+    render_banner()
+    root = find_project_root()
+    ctx = _load_proxy_context(root)
+    _proxy_require_creds(ctx)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+    pool_name = names["pool"]
+
+    console.print(f"[bold]Resuming compute pool {pool_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER COMPUTE POOL {pool_name} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Compute pool resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume compute pool: {e}")
+        sys.exit(1)
+
+    console.print(f"[bold]Resuming proxy service {service_name}...[/bold]")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"ALTER SERVICE {fqn_schema}.{service_name} RESUME",
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        console.print(f"  [green]✓[/green] Service resumed")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to resume service: {e}")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]Proxy resumed.[/green]")
+
+
+def _proxy_logs(args: argparse.Namespace):
+    """Fetch standalone proxy container logs."""
+    render_banner()
+    root = find_project_root()
+    ctx = _load_proxy_context(root)
+    _proxy_require_creds(ctx)
+
+    account = ctx["account"]
+    token = ctx["token"]
+    names = ctx["names"]
+    db = names["db"]
+    schema_name = names["schema_name"]
+    fqn_schema = names["schema"]
+    warehouse = ctx["warehouse"]
+    service_name = names["service"]
+
+    num_lines = getattr(args, "lines", 100)
+    instance_id = getattr(args, "instance", "0")
+
+    fqn_service = f"{fqn_schema}.{service_name}"
+    sql = (
+        f"CALL SYSTEM$GET_SERVICE_LOGS("
+        f"'{fqn_service}', '{instance_id}', 'cortex-proxy', {num_lines})"
+    )
+
+    console.print(
+        f"[bold]Fetching proxy logs:[/bold] {service_name} "
+        f"[dim](instance={instance_id}, lines={num_lines})[/dim]"
+    )
+    console.print()
+
+    try:
+        data = snowflake_rest_execute(
+            account, token, sql,
+            database=db, schema=schema_name, warehouse=warehouse,
+        )
+        rows = data.get("data", [])
+        if rows and rows[0]:
+            log_text = rows[0][0]
+            if log_text:
+                console.print(log_text)
+            else:
+                console.print("[dim]No log output returned.[/dim]")
+        else:
+            console.print("[dim]No log output returned.[/dim]")
+    except requests.HTTPError as e:
+        console.print(f"[red]Failed to fetch logs:[/red] {e}")
+        sys.exit(1)
+
+
+def cmd_proxy(args: argparse.Namespace):
+    """Dispatch proxy subcommands."""
+    handlers = {
+        "setup": _proxy_setup,
+        "deploy": _proxy_deploy,
+        "status": _proxy_status,
+        "suspend": _proxy_suspend,
+        "resume": _proxy_resume,
+        "logs": _proxy_logs,
+    }
+    subcmd = getattr(args, "proxy_command", None)
+    if not subcmd:
+        console.print("[bold]Usage:[/bold] snowclaw proxy <setup|deploy|status|suspend|resume|logs>")
+        console.print("[dim]Run [cyan]snowclaw proxy setup[/cyan] to get started.[/dim]")
+        return
+    handler = handlers.get(subcmd)
+    if handler:
+        handler(args)
+    else:
+        console.print(f"[red]Unknown proxy command: {subcmd}[/red]")

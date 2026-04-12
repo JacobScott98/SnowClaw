@@ -1,5 +1,5 @@
 ARG OPENCLAW_VERSION=latest
-FROM --platform=linux/amd64 ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
 # Stage default files into a defaults directory so the entrypoint can
 # seed them into the volume-mounted OPENCLAW_HOME on first run.
@@ -11,14 +11,16 @@ COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
 # to initialize the binary, which fails under QEMU (exit 132 / SIGILL) when
 # cross-building amd64 images on Apple Silicon.  We replicate the install
 # steps without that final exec so the image builds cleanly on any host.
+ARG TARGETARCH
 RUN set -e \
     && S3_BUCKET="sfc-repo.snowflakecomputing.com" \
     && S3_PREFIX="cortex-code-cli/a4643c4278" \
+    && ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-amd64") \
     && VERSION=$(curl -fsSL "https://${S3_BUCKET}/${S3_PREFIX}/stable_version.txt" | tr -d '[:space:]') \
     && ENCODED_VERSION=$(echo "$VERSION" | sed 's/+/%2B/g') \
     && MANIFEST_URL="https://${S3_BUCKET}/${S3_PREFIX}/${ENCODED_VERSION}/manifest.json" \
     && MANIFEST=$(curl -fsSL "$MANIFEST_URL") \
-    && TAR_NAME=$(echo "$MANIFEST" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*linux-amd64\.tar\.gz"' | head -1 | grep -o '"[^"]*\.tar\.gz"' | tr -d '"') \
+    && TAR_NAME=$(echo "$MANIFEST" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*'"${ARCH_SUFFIX}"'\.tar\.gz"' | head -1 | grep -o '"[^"]*\.tar\.gz"' | tr -d '"') \
     && ENCODED_TAR=$(echo "$TAR_NAME" | sed 's/+/%2B/g') \
     && DOWNLOAD_URL="https://${S3_BUCKET}/${S3_PREFIX}/${ENCODED_VERSION}/${ENCODED_TAR}" \
     && INSTALL_DIR="$HOME/.local/share/cortex/${VERSION}" \
@@ -40,12 +42,19 @@ RUN set -e \
 # Switch to root for system-level installs
 USER root
 
-# Install GitHub CLI
+# Install GitHub CLI and Python dev dependencies (pip, venv) in a single layer.
+# python3 + pip + venv let agents/users install Python packages and create
+# virtual environments inside the running container.
+# npm is already available from the base node:24-bookworm image.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && apt-get update && apt-get install -y --no-install-recommends \
+         gh \
+         python3 \
+         python3-pip \
+         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure the openclaw home dir exists with correct ownership so volume mounts work
