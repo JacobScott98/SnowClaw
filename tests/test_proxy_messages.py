@@ -276,7 +276,7 @@ class TestResponses:
         assert resp.status_code == 400
         assert resp.json() == {"error": "bad request"}
 
-    def test_cache_stats_logged_when_present(self, client: TestClient, caplog):
+    def test_response_metadata_logged_when_enabled(self, client: TestClient, caplog):
         upstream_body = {
             "id": "msg_x",
             "content": [],
@@ -288,27 +288,28 @@ class TestResponses:
             },
         }
         mock_send, _ = _capture_send(json_body=upstream_body)
-        with caplog.at_level(logging.INFO, logger="app"):
-            with patch("app.send_with_retry", new=mock_send):
-                client.post(
-                    "/v1/messages",
-                    json={"model": "claude-sonnet-4-6", "messages": []},
-                )
-        assert any("Cache stats" in r.message and "read=4523" in r.message for r in caplog.records)
+        with patch.dict("os.environ", {"PROXY_LOG_RESPONSES": "1"}):
+            with caplog.at_level(logging.INFO, logger="response_logging"):
+                with patch("app.send_with_retry", new=mock_send):
+                    client.post(
+                        "/v1/messages",
+                        json={"model": "claude-sonnet-4-6", "messages": []},
+                    )
+        assert any("Cortex response metadata" in r.message and "cache_read_input_tokens" in r.message for r in caplog.records)
 
-    def test_cache_stats_silent_when_zero(self, client: TestClient, caplog):
+    def test_response_metadata_silent_when_disabled(self, client: TestClient, caplog):
         upstream_body = {
             "id": "msg_x",
             "usage": {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
         }
         mock_send, _ = _capture_send(json_body=upstream_body)
-        with caplog.at_level(logging.INFO, logger="app"):
+        with caplog.at_level(logging.INFO, logger="response_logging"):
             with patch("app.send_with_retry", new=mock_send):
                 client.post(
                     "/v1/messages",
                     json={"model": "claude-sonnet-4-6", "messages": []},
                 )
-        assert not any("Cache stats" in r.message for r in caplog.records)
+        assert not any("Cortex response metadata" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -318,20 +319,26 @@ class TestResponses:
 
 class TestStreaming:
     def test_streaming_passes_bytes_through(self, client: TestClient):
-        """Streaming branch must pass raw upstream bytes through unchanged."""
-        sse_chunks = [
-            b'event: message_start\ndata: {"type":"message_start"}\n\n',
-            b'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n',
-            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        """Streaming branch must pass raw upstream lines through unchanged."""
+        sse_lines = [
+            'event: message_start',
+            'data: {"type":"message_start"}',
+            '',
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta"}',
+            '',
+            'event: message_stop',
+            'data: {"type":"message_stop"}',
+            '',
         ]
 
         class FakeStreamResponse:
             status_code = 200
             retry_count = 0
 
-            async def aiter_raw(self):
-                for chunk in sse_chunks:
-                    yield chunk
+            async def aiter_lines(self):
+                for line in sse_lines:
+                    yield line
 
             async def aread(self):
                 return b""
@@ -349,10 +356,10 @@ class TestStreaming:
                 json={"model": "claude-sonnet-4-6", "stream": True, "messages": []},
             ) as resp:
                 assert resp.status_code == 200
-                received = b"".join(resp.iter_raw())
+                received = b"".join(resp.iter_raw()).decode()
 
-        for chunk in sse_chunks:
-            assert chunk in received
+        for line in sse_lines:
+            assert line in received
 
     def test_streaming_upstream_error_returns_json(self, client: TestClient):
         """Streaming with non-200 upstream returns a JSONResponse with the error body."""
