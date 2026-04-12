@@ -106,6 +106,27 @@ def extract_response_metadata(
     return meta
 
 
+def extract_usage_from_sse_line(line: str) -> dict[str, Any] | None:
+    """Parse a single SSE data line and return its JSON payload if it contains usage.
+
+    Returns the full parsed chunk dict when a ``usage`` key with non-empty value
+    is present, otherwise ``None``.  Silently returns ``None`` for non-data lines,
+    the ``[DONE]`` sentinel, and malformed JSON.
+    """
+    if not line.startswith("data: "):
+        return None
+    payload = line[6:]
+    if payload.strip() == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(payload)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, dict) and parsed.get("usage"):
+        return parsed
+    return None
+
+
 def log_response_metadata(
     resp: httpx.Response,
     body: dict[str, Any] | None,

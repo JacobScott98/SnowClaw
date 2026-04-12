@@ -12,7 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "proxy"))
 
-from response_logging import _redact_choices, extract_response_metadata, log_response_metadata
+from response_logging import (
+    _redact_choices,
+    extract_response_metadata,
+    extract_usage_from_sse_line,
+    log_response_metadata,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +240,43 @@ class TestConfigToggle:
         with patch.dict("os.environ", {"PROXY_LOG_RESPONSES": "YES"}):
             from config import is_response_logging_enabled
             assert is_response_logging_enabled() is True
+
+
+# ---------------------------------------------------------------------------
+# extract_usage_from_sse_line
+# ---------------------------------------------------------------------------
+
+
+class TestExtractUsageFromSseLine:
+    def test_returns_chunk_with_usage(self):
+        line = 'data: {"id":"chatcmpl-1","usage":{"prompt_tokens":10,"completion_tokens":5}}'
+        result = extract_usage_from_sse_line(line)
+        assert result is not None
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5}
+        assert result["id"] == "chatcmpl-1"
+
+    def test_returns_none_for_chunk_without_usage(self):
+        line = 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"hi"}}]}'
+        assert extract_usage_from_sse_line(line) is None
+
+    def test_returns_none_for_empty_usage(self):
+        line = 'data: {"id":"chatcmpl-1","usage":{}}'
+        assert extract_usage_from_sse_line(line) is None
+
+    def test_returns_none_for_done_sentinel(self):
+        assert extract_usage_from_sse_line("data: [DONE]") is None
+
+    def test_returns_none_for_non_data_line(self):
+        assert extract_usage_from_sse_line("event: message") is None
+        assert extract_usage_from_sse_line("") is None
+        assert extract_usage_from_sse_line(": comment") is None
+
+    def test_returns_none_for_malformed_json(self):
+        assert extract_usage_from_sse_line("data: {not json}") is None
+
+    def test_cache_stats_in_usage(self):
+        line = 'data: {"usage":{"prompt_tokens":100,"completion_tokens":20,"cache_creation_input_tokens":50,"cache_read_input_tokens":30}}'
+        result = extract_usage_from_sse_line(line)
+        assert result is not None
+        assert result["usage"]["cache_creation_input_tokens"] == 50
+        assert result["usage"]["cache_read_input_tokens"] == 30

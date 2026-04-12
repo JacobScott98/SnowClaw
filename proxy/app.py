@@ -10,9 +10,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from config import get_cortex_base_url, is_response_logging_enabled
+from config import get_cortex_base_url, is_claude_model, is_response_logging_enabled
 from masking import SecretMasker
-from response_logging import log_response_metadata
+from response_logging import extract_usage_from_sse_line, log_response_metadata
 from retry import send_with_retry
 from transforms import transform_request
 
@@ -57,10 +57,20 @@ async def chat_completions(request: Request) -> Response:
     base_url = get_cortex_base_url()
     upstream_url = f"{base_url}/chat/completions"
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+    }
     auth = request.headers.get("Authorization")
     if auth:
         headers["Authorization"] = auth
+    # Enable 1M context window for Claude models by default; allow client override.
+    if is_claude_model(model):
+        headers["anthropic-beta"] = request.headers.get(
+            "anthropic-beta", "context-1m-2025-08-07"
+        )
+    elif request.headers.get("anthropic-beta"):
+        headers["anthropic-beta"] = request.headers.get("anthropic-beta")
 
     is_streaming = transformed.get("stream", False)
     client = _get_client()
@@ -91,14 +101,22 @@ async def chat_completions(request: Request) -> Response:
                     headers=resp_headers,
                 )
 
-            if is_response_logging_enabled():
-                log_response_metadata(upstream_resp, None, model)
+            log_streaming = is_response_logging_enabled()
 
             async def stream_chunks():
+                last_usage_chunk: dict | None = None
                 try:
-                    async for chunk in upstream_resp.aiter_raw():
-                        yield chunk
+                    async for line in upstream_resp.aiter_lines():
+                        yield (line + "\n").encode()
+                        if log_streaming and line.startswith("data: "):
+                            parsed = extract_usage_from_sse_line(line)
+                            if parsed is not None:
+                                last_usage_chunk = parsed
                 finally:
+                    if log_streaming and last_usage_chunk is not None:
+                        log_response_metadata(
+                            upstream_resp, last_usage_chunk, model,
+                        )
                     await upstream_resp.aclose()
 
             resp_headers = {
