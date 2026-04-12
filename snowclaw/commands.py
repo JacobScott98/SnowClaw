@@ -1424,6 +1424,26 @@ def cmd_channel(args: argparse.Namespace):
         handler(args)
 
 
+def cmd_plugins(args: argparse.Namespace):
+    """Manage OpenClaw plugins."""
+    from snowclaw.plugins import plugins_add, plugins_list, plugins_remove
+
+    sub = getattr(args, "plugins_command", None)
+    root = find_project_root()
+    if not sub:
+        plugins_list(root)
+        return
+
+    dispatch = {
+        "list": lambda a: plugins_list(root),
+        "add": lambda a: plugins_add(root, a.spec),
+        "remove": lambda a: plugins_remove(root, a.id),
+    }
+    handler = dispatch.get(sub)
+    if handler:
+        handler(args)
+
+
 def cmd_model(args: argparse.Namespace):
     """View or change the default agent model."""
     sub = getattr(args, "model_command", None)

@@ -320,6 +320,19 @@ def write_openclaw_config(root: Path, settings: dict):
             }
         }
 
+    # Plugins — generate section from .snowclaw/plugins.json
+    from snowclaw.plugins import load_plugins
+
+    configured_plugins = load_plugins(root)
+    if configured_plugins:
+        path_plugins = [p for p in configured_plugins if p["source"] == "path"]
+        plugin_entries = {}
+        for p in configured_plugins:
+            plugin_entries[p["id"]] = {"enabled": True}
+        plugins_section: dict = {"enabled": True, "entries": plugin_entries}
+        if path_plugins:
+            plugins_section["load"] = {"paths": ["/opt/snowclaw/plugins"]}
+        config["plugins"] = plugins_section
 
     config_path = root / "openclaw.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")

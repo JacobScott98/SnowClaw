@@ -1,8 +1,0 @@
-{
-  "name": "@snowclaw/cortex-code",
-  "version": "0.1.0",
-  "description": "OpenClaw plugin: MCP bridge for Cortex Code integration",
-  "main": "index.js",
-  "type": "module",
-  "dependencies": {}
-}

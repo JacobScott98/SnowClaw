@@ -16,6 +16,7 @@ snowclaw/                    # CLI repo (installed via pipx)
     config.py                # Config file writers (.env, openclaw.json, connections.toml)
     channels.py              # Channel management (Slack, Telegram, Discord)
     network.py               # Network rule management + channel/tool registries
+    plugins.py               # Plugin management (npm + path-based)
     scaffold.py              # User file scaffolding and build context assembly
     snowflake.py             # Snowflake object creation via REST API
     stage.py                 # SPCS stage push/pull (snowflake-connector-python)
@@ -36,9 +37,6 @@ snowclaw/                    # CLI repo (installed via pipx)
       service.yaml           # SPCS service spec (two containers, dynamic secrets)
       proxy-service.yaml     # SPCS service spec (standalone proxy, single container)
       image-repo.sql         # SQL: database, schema, image repo, stage, secrets, compute pool
-    plugins/
-      cortex-tools/          # OpenClaw plugin: SQL queries + Cortex functions (stub)
-      cortex-code/           # OpenClaw plugin: MCP bridge for Cortex Code (stub)
     skills/
       cortex-code/           # Cortex Code skill definition (copied to user project)
   tests/                     # Unit tests (pytest)
@@ -79,7 +77,7 @@ my-openclaw/                 # User's project directory
   scripts/
     docker-entrypoint.sh     # From CLI templates
   skills/                    # Copied from project root
-  plugins/                   # Copied from CLI templates
+  plugins/                   # Path-based plugins copied from user project (if any)
   proxy/                     # Copied from CLI proxy/
   build-hooks/               # Copied from project root (if any .sh files exist)
   spcs/
@@ -113,6 +111,9 @@ Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx 
 | `snowclaw channel add` | Interactive wizard to add a channel (Slack, Telegram, Discord) |
 | `snowclaw channel remove <name>` | Remove a channel |
 | `snowclaw channel edit <name>` | Edit channel credentials |
+| `snowclaw plugins list` | List configured plugins |
+| `snowclaw plugins add <spec>` | Add a plugin (npm package or local path) |
+| `snowclaw plugins remove <id>` | Remove a plugin |
 | `snowclaw network list` | Show current approved network rules |
 | `snowclaw network add <host[:port]>` | Add a network rule, prompts to apply |
 | `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply |
@@ -385,15 +386,27 @@ Users can add custom Dockerfile layers via `build-hooks/` directory:
 - Skills and workspace also syncable via `--skills-only` / `--workspace-only`
 - No flags → syncs all three (skills + workspace + config)
 
-## Plugins (stubs — not yet implemented)
+## Plugins (`snowclaw/plugins.py`)
 
-### cortex-tools
+OpenClaw plugins are managed via `snowclaw plugins` commands. Two plugin sources are supported:
 
-Registers 4 tools: `cortex_sql_query`, `cortex_complete`, `cortex_translate`, `cortex_summarize`. Execution pipeline (snowflake-sdk) not yet wired.
+- **npm packages** — installed via `RUN openclaw plugins install` during Docker build
+- **Path-based** — local directories copied into the build context and registered via `plugins.load.paths`
 
-### cortex-code
+### Commands
 
-MCP endpoint at `/mcp`. Handles JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tool enumeration and invocation not yet wired.
+| Command | Description |
+|---------|-------------|
+| `snowclaw plugins list` | Show configured plugins |
+| `snowclaw plugins add <spec>` | Add a plugin (npm package or local path) |
+| `snowclaw plugins remove <id>` | Remove a plugin |
+
+### How it works
+
+1. **Persistence**: Plugin declarations stored in `.snowclaw/plugins.json` (committed to git)
+2. **Config generation**: `write_openclaw_config()` reads plugins.json and emits a `plugins` section in `openclaw.json` with `entries` and `load.paths`
+3. **Build integration**: `assemble_build_context()` copies path-based plugins into `.snowclaw/build/plugins/` and injects `RUN openclaw plugins install` Dockerfile layers for npm plugins
+4. **Plugin config/credentials**: Users configure plugin settings directly in `openclaw.json` (`plugins.entries.<id>.config`) and credentials in `.env`
 
 ## Architecture
 
@@ -439,8 +452,8 @@ Single container, public endpoint. No masking, no secrets, no volumes. Each user
 
 ## Phased Rollout
 
-1. **Phase 1** (current): Open source bootstrapper — CLI, Cortex proxy, multi-channel messaging, config lockdown, build hooks, custom secrets
-2. **Phase 2**: Build cortex-tools and cortex-code plugins, upstream PRs for OpenClaw gaps
+1. **Phase 1** (current): Open source bootstrapper — CLI, Cortex proxy, multi-channel messaging, config lockdown, build hooks, custom secrets, plugin management
+2. **Phase 2**: Build cortex-tools and cortex-code as proper OpenClaw plugins, upstream PRs for OpenClaw gaps
 3. **Phase 3**: Repackage as Snowflake Native App (separate proprietary codebase)
 
 ## Future Work
