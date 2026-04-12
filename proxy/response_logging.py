@@ -100,8 +100,11 @@ def extract_response_metadata(
         meta["choices"] = _redact_choices(body["choices"])
 
     # Error details (non-200 responses)
+    # Cortex uses "error" (OpenAI shape) or "message" (Anthropic/Snowflake shape).
     if "error" in body:
         meta["error"] = body["error"]
+    if "message" in body and resp.status_code >= 400:
+        meta["error_message"] = body["message"]
 
     return meta
 
