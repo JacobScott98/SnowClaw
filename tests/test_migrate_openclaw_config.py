@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from snowclaw.config import migrate_openclaw_config
+from snowclaw.config import CORTEX_CLAUDE_CONTEXT_WINDOW, migrate_claude_context_window, migrate_openclaw_config
 
 
 def _write_config(root: Path, config: dict) -> Path:
@@ -225,3 +225,117 @@ class TestNoop:
         assert cfg["channels"] == {"slack": {"enabled": True}}
         assert cfg["tools"] == {"web": {"search": {"provider": "brave"}}}
         assert cfg["customKey"] == {"nested": "value"}
+
+
+# ---------------------------------------------------------------------------
+# Claude context window migration (200K → 1M)
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeContextWindowMigration:
+    def test_upgrades_200k_to_1m(self, tmp_path: Path):
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex-claude": {
+                        "api": "anthropic-messages",
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "contextWindow": 200000, "maxTokens": 131072},
+                            {"id": "claude-opus-4-6", "contextWindow": 200000, "maxTokens": 131072},
+                        ],
+                    },
+                    "cortex-openai": {
+                        "api": "openai-completions",
+                        "models": [{"id": "openai-gpt-5.1", "contextWindow": 1047576}],
+                    },
+                }
+            },
+        })
+        assert migrate_claude_context_window(tmp_path) is True
+        cfg = _read_config(tmp_path)
+        cc_models = cfg["models"]["providers"]["cortex-claude"]["models"]
+        assert cc_models[0]["contextWindow"] == CORTEX_CLAUDE_CONTEXT_WINDOW
+        assert cc_models[1]["contextWindow"] == CORTEX_CLAUDE_CONTEXT_WINDOW
+        # OpenAI models untouched
+        co_models = cfg["models"]["providers"]["cortex-openai"]["models"]
+        assert co_models[0]["contextWindow"] == 1047576
+
+    def test_custom_context_window_preserved(self, tmp_path: Path):
+        """User-customized contextWindow (not 200K) should not be overwritten."""
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex-claude": {
+                        "api": "anthropic-messages",
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "contextWindow": 99999},
+                        ],
+                    },
+                }
+            },
+        })
+        assert migrate_claude_context_window(tmp_path) is False
+        cfg = _read_config(tmp_path)
+        assert cfg["models"]["providers"]["cortex-claude"]["models"][0]["contextWindow"] == 99999
+
+    def test_already_1m_is_noop(self, tmp_path: Path):
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex-claude": {
+                        "api": "anthropic-messages",
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "contextWindow": CORTEX_CLAUDE_CONTEXT_WINDOW},
+                        ],
+                    },
+                }
+            },
+        })
+        assert migrate_claude_context_window(tmp_path) is False
+
+    def test_missing_file_is_noop(self, tmp_path: Path):
+        assert migrate_claude_context_window(tmp_path) is False
+
+    def test_handles_old_cortex_provider(self, tmp_path: Path):
+        """Pre-split configs with old `cortex` provider should also be migrated."""
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex": {
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "contextWindow": 200000},
+                            {"id": "openai-gpt-5.1", "contextWindow": 1047576},
+                        ],
+                    },
+                }
+            },
+        })
+        assert migrate_claude_context_window(tmp_path) is True
+        cfg = _read_config(tmp_path)
+        models = cfg["models"]["providers"]["cortex"]["models"]
+        assert models[0]["contextWindow"] == CORTEX_CLAUDE_CONTEXT_WINDOW
+        assert models[1]["contextWindow"] == 1047576  # non-Claude untouched
+
+    def test_unrelated_keys_preserved(self, tmp_path: Path):
+        _write_config(tmp_path, {
+            "models": {
+                "providers": {
+                    "cortex-claude": {
+                        "api": "anthropic-messages",
+                        "baseUrl": "http://localhost:8080",
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "contextWindow": 200000, "maxTokens": 131072},
+                        ],
+                    },
+                }
+            },
+            "agents": {"defaults": {"model": "cortex-claude/claude-sonnet-4-6"}},
+            "channels": {"slack": {"enabled": True}},
+        })
+        migrate_claude_context_window(tmp_path)
+        cfg = _read_config(tmp_path)
+        assert cfg["agents"]["defaults"]["model"] == "cortex-claude/claude-sonnet-4-6"
+        assert cfg["channels"] == {"slack": {"enabled": True}}
+        cc = cfg["models"]["providers"]["cortex-claude"]
+        assert cc["baseUrl"] == "http://localhost:8080"
+        assert cc["models"][0]["maxTokens"] == 131072

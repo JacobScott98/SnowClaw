@@ -10,9 +10,11 @@ from snowclaw.utils import console
 
 DEFAULT_MAX_TOKENS = 131072
 
+CORTEX_CLAUDE_CONTEXT_WINDOW = 1048576
+
 CORTEX_CLAUDE_MODELS = [
-    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": 200000, "maxTokens": DEFAULT_MAX_TOKENS},
-    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": 200000, "maxTokens": DEFAULT_MAX_TOKENS},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "contextWindow": CORTEX_CLAUDE_CONTEXT_WINDOW, "maxTokens": DEFAULT_MAX_TOKENS},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "contextWindow": CORTEX_CLAUDE_CONTEXT_WINDOW, "maxTokens": DEFAULT_MAX_TOKENS},
 ]
 
 CORTEX_OPENAI_MODELS = [
@@ -138,6 +140,59 @@ def migrate_openclaw_config(root: Path) -> bool:
         "  [yellow]→[/yellow] Migrated [cyan]openclaw.json[/cyan]: "
         "[dim]cortex →[/dim] cortex-openai + cortex-claude "
         "[dim](Claude models now use prompt caching)[/dim]"
+    )
+    console.print(
+        "  [dim]Note: if this project is already deployed, run "
+        "`snowclaw push --config-only` then `snowclaw restart` to apply.[/dim]"
+    )
+    return True
+
+
+def migrate_claude_context_window(root: Path) -> bool:
+    """Upgrade Claude model contextWindow from 200K to 1M in existing configs.
+
+    Claude 4.6 models on Cortex support a 1M context window. Projects created
+    before this default was changed still have ``contextWindow: 200000``.  This
+    migration bumps any Claude model that still carries the old 200K value to
+    the current ``CORTEX_CLAUDE_CONTEXT_WINDOW`` (1048576).  User-customised
+    values (anything other than 200000) are left untouched.
+
+    Returns True iff a change was written.
+    """
+    config_path = root / "openclaw.json"
+    if not config_path.exists():
+        return False
+
+    try:
+        config = json.loads(config_path.read_text())
+    except json.JSONDecodeError:
+        return False
+
+    providers = config.get("models", {}).get("providers", {})
+
+    OLD_CONTEXT_WINDOW = 200000
+    changed = False
+
+    for provider_id in ("cortex-claude", "cortex"):
+        provider = providers.get(provider_id)
+        if not provider:
+            continue
+        for model in provider.get("models", []):
+            if not isinstance(model, dict):
+                continue
+            if not str(model.get("id", "")).startswith("claude"):
+                continue
+            if model.get("contextWindow") == OLD_CONTEXT_WINDOW:
+                model["contextWindow"] = CORTEX_CLAUDE_CONTEXT_WINDOW
+                changed = True
+
+    if not changed:
+        return False
+
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    console.print(
+        "  [yellow]→[/yellow] Migrated [cyan]openclaw.json[/cyan]: "
+        f"[dim]Claude contextWindow 200K → {CORTEX_CLAUDE_CONTEXT_WINDOW // 1000}K[/dim]"
     )
     console.print(
         "  [dim]Note: if this project is already deployed, run "

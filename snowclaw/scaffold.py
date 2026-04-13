@@ -8,7 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from snowclaw.config import migrate_openclaw_config
+from snowclaw.config import migrate_claude_context_window, migrate_openclaw_config
 from snowclaw.network import (
     CHANNEL_REGISTRY,
     TOOL_REGISTRY,
@@ -126,9 +126,9 @@ def assemble_build_context(root: Path) -> Path:
     openclaw_version = marker.get("openclaw_version", "latest")
     templates = get_templates_dir()
 
-    # Auto-migrate pre-existing openclaw.json (single `cortex` provider) to the
-    # cortex-claude/cortex-openai split. No-op if already migrated.
+    # Auto-migrate pre-existing openclaw.json. Each migration is idempotent.
     migrate_openclaw_config(root)
+    migrate_claude_context_window(root)
 
     build_dir = root / ".snowclaw" / "build"
 
