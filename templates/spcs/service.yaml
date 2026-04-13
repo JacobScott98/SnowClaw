@@ -29,6 +29,7 @@ __ENV_SECRETS__
       env:
         CORTEX_BASE_URL: https://__SNOWCLAW_ACCOUNT__.snowflakecomputing.com/api/v2/cortex/v1
         SNOWCLAW_MASK_VARS: __SNOWCLAW_MASK_VARS__
+        PROXY_LOG_RESPONSES: __PROXY_LOG_RESPONSES__
       secrets:
         - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
           secretKeyRef: secret_string
