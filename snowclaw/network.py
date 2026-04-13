@@ -164,6 +164,7 @@ def get_env_secrets(prefix: str, env_path: Path) -> list[dict]:
         "SNOWCLAW_MASK_VARS",
         "CORTEX_BASE_URL",
         "IMAGE_TAG",
+        "PROXY_LOG_RESPONSES",
     }
 
     # Hardcoded secrets handled explicitly by callers

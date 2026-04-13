@@ -313,6 +313,7 @@ def assemble_build_context(root: Path) -> Path:
                 content = content.replace("__ENV_SECRETS__", env_secrets_yaml)
                 content = content.replace("__ENV_SECRETS_PROXY__", env_secrets_yaml)
                 content = content.replace("__SNOWCLAW_MASK_VARS__", mask_vars_value)
+                content = content.replace("__PROXY_LOG_RESPONSES__", env_values.get("PROXY_LOG_RESPONSES", ""))
                 content = content.replace("__SNOWCLAW_ACCOUNT__", account)
             (spcs_dir / name).write_text(content)
 
