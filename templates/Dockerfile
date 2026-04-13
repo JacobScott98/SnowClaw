@@ -1,11 +1,24 @@
 ARG OPENCLAW_VERSION=latest
 FROM --platform=linux/amd64 ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
+# Gateway auth build args — baked into a fallback openclaw.json so the image
+# ships with a default config even when no stage-backed volume is mounted.
+ARG OPENCLAW_GATEWAY_AUTH_MODE=none
+ARG OPENCLAW_GATEWAY_BIND=loopback
+
 # Stage default files into a defaults directory so the entrypoint can
 # seed them into the volume-mounted OPENCLAW_HOME on first run.
-# openclaw.json is NOT baked in — it's uploaded to the stage by deploy/push.
 COPY --chown=1000:1000 skills/ /opt/snowclaw/defaults/skills/
 COPY --chown=1000:1000 workspace/ /opt/snowclaw/defaults/workspace/
+
+# Generate a minimal openclaw.json with gateway auth config as a fallback.
+# The stage-backed volume config (managed by deploy/push) takes precedence at runtime.
+COPY scripts/inject-gateway-auth.sh /tmp/inject-gateway-auth.sh
+RUN chmod +x /tmp/inject-gateway-auth.sh \
+    && OPENCLAW_GATEWAY_AUTH_MODE="${OPENCLAW_GATEWAY_AUTH_MODE}" \
+       OPENCLAW_GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND}" \
+       /tmp/inject-gateway-auth.sh /opt/snowclaw/defaults/openclaw.json \
+    && rm /tmp/inject-gateway-auth.sh
 
 # Install Cortex Code manually — the official install.sh runs `cortex --help`
 # to initialize the binary, which fails under QEMU (exit 132 / SIGILL) when

@@ -7,8 +7,12 @@ DEFAULTS="/opt/snowclaw/defaults"
 # Ensure the volume-mounted home dir exists
 mkdir -p "$OPENCLAW_HOME"
 
-# openclaw.json lives on the stage-backed volume — managed by deploy/push,
-# not baked into the image. No copy needed here.
+# openclaw.json: prefer the stage-backed volume copy (managed by deploy/push).
+# If none exists, seed from the baked-in default so the gateway starts with
+# a valid auth config even on first boot before any push.
+if [ ! -f "$OPENCLAW_HOME/openclaw.json" ] && [ -f "$DEFAULTS/openclaw.json" ]; then
+    cp "$DEFAULTS/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
+fi
 
 # connections.toml also lives on the stage volume — symlink it into
 # the Snowflake SDK's expected location if present.
