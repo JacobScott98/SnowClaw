@@ -62,6 +62,16 @@ def stage_list(
     return [{"name": row[0], "size": row[1], "md5": row[2]} for row in rows]
 
 
+def stage_file_exists(
+    conn: snowflake.connector.SnowflakeConnection,
+    fqn_stage: str,
+    stage_path: str,
+) -> bool:
+    """Check whether a specific file exists at `stage_path` on the stage."""
+    files = stage_list(conn, fqn_stage, prefix=stage_path)
+    return any(files)
+
+
 def stage_pull_file(
     conn: snowflake.connector.SnowflakeConnection,
     fqn_stage: str,

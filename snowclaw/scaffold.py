@@ -47,8 +47,10 @@ volumes:
 def scaffold_user_files(target: Path, force: bool = False) -> tuple[list[str], list[str]]:
     """Scaffold only user-editable files into the project directory.
 
-    Copies: skills/, .gitignore. Creates: workspace/.
+    Copies: skills/, .gitignore.
     Does NOT copy Dockerfile, docker-compose.yml, scripts/, spcs/, plugins/.
+    workspace/ is NOT scaffolded — it lives only on the SPCS stage / container
+    volume and is managed via `snowclaw upload`/`download`/`ls`.
     """
     templates = get_templates_dir()
     if not templates.is_dir():
@@ -82,13 +84,6 @@ def scaffold_user_files(target: Path, force: bool = False) -> tuple[list[str], l
         else:
             shutil.copy2(gitignore_src, dest)
             copied.append(".gitignore")
-
-    # Create workspace/ directory
-    workspace = target / "workspace"
-    if not workspace.exists():
-        workspace.mkdir()
-        (workspace / ".gitkeep").touch()
-        copied.append("workspace/")
 
     # Create build-hooks/ directory with README
     build_hooks = target / "build-hooks"

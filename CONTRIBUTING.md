@@ -33,9 +33,13 @@ my-openclaw/
   connections.toml        # Snowflake connection — gitignored
   skills/                 # Editable skill definitions
     cortex-code/
+    snowclaw/
   build-hooks/            # Custom build scripts (*.sh, run at image build time)
-  workspace/              # Markdown knowledge base
 ```
+
+The agent's `workspace/` lives only on the SPCS stage / container volume. It
+is not scaffolded locally and is not part of `snowclaw push` / `pull`. Move
+files in and out with `snowclaw upload` / `download` / `ls`.
 
 ## Project Layout (repo)
 

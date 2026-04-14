@@ -49,7 +49,7 @@ SnowClaw is designed to be safe to run in your Snowflake account by default.
 - **Secrets & credential management** — All secrets live in your local `.env` file and are uploaded to Snowflake as individual SECRET objects on every `deploy` or `push`. Nothing is baked into the Docker image. Add any custom environment variable to `.env` and it automatically becomes a Snowflake secret, mounted into the container at runtime. See [Secrets & Credentials](#secrets--credentials) for details.
 - **Snowflake Cortex LLMs** — Pre-configured as a provider. Models run inside Snowflake — your data never leaves your account.
 - **Cortex Code** — AI coding assistant installed automatically in the container with a bundled skill definition. Your agent can write, edit, and manage code out of the box.
-- **Cortex proxy sidecar** — A FastAPI proxy between OpenClaw and Cortex that serializes parallel tool calls (fixing Claude model issues), normalizes request parameters across model families, and masks secrets in outbound traffic. Can also be deployed as a [standalone proxy](#standalone-proxy) for external OpenClaw agents.
+- **Cortex proxy sidecar** — A FastAPI proxy between OpenClaw and Cortex with two endpoints: `/v1/chat/completions` (OpenAI-shaped, for OpenAI/Snowflake/Llama models) and `/v1/messages` (Anthropic-shaped, for Claude models with native prompt caching). Handles parallel tool call serialization, request normalization, secret masking, response metadata logging, and automatic 1M context window headers for Claude. Can also be deployed as a [standalone proxy](#standalone-proxy) for external OpenClaw agents.
 - **Multi-channel messaging** — Slack, Telegram, and Discord supported out of the box. `snowclaw channel add` walks you through configuration with auto-detected network rules per channel.
 - **Dynamic network rules** — Auto-detects required external hosts from your config and prompts for approval before creating Snowflake network rules and external access integrations.
 - **Build hooks** — Drop `.sh` scripts into `build-hooks/` to install packages or tools at image build time. No Dockerfile editing needed.
@@ -66,14 +66,18 @@ Channels <--socket/ws--> SPCS Ingress <--> OpenClaw Gateway (:18789)
                                              +-- Plugin HTTP routes
                                              |
                                            Cortex Proxy Sidecar (:8080)
-                                             +-- Parallel tool call serialization
-                                             +-- Secret masking
-                                             +-- Request normalization
+                                             +-- POST /v1/chat/completions
+                                             |     (OpenAI/Snowflake/Llama — tool call serialization, request transforms)
+                                             +-- POST /v1/messages
+                                             |     (Claude — native prompt caching, no transforms needed)
+                                             +-- Secret masking (per-shape walker)
+                                             +-- Response metadata logging
+                                             +-- 1M context window headers (Claude)
                                              |
                                              +-- Snowflake Cortex (outbound)
 ```
 
-All traffic goes through a single SPCS ingress endpoint on port 18789. The Cortex proxy runs as a sidecar container in the same service. Snowflake handles TLS and authentication.
+All traffic goes through a single SPCS ingress endpoint on port 18789. The Cortex proxy runs as a sidecar container in the same service with two endpoints — one per API shape. Snowflake handles TLS and authentication.
 
 ## Secrets & Credentials
 
@@ -116,7 +120,7 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 
 - `openclaw.json`, `secrets.json`, and the `credentials/` directory are **root-owned and read-only** (mode `440`). The agent process cannot modify configuration or credentials.
 - The `.snowflake/` directory (containing `connections.toml`) is owned by the `node` user so Cortex can read and write connection state.
-- `workspace/` and `skills/` are agent-writable.
+- `skills/` is agent-writable. The agent's `workspace/` lives only on the SPCS stage / container volume — it is not scaffolded locally and is not part of `push` / `pull`. Move files in and out with `snowclaw upload` / `download` / `ls`.
 
 ## CLI Commands
 
@@ -133,9 +137,12 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 | `snowclaw restart` | Restart the service to pick up config changes |
 | `snowclaw logs` | Show container logs from the SPCS service |
 | `snowclaw update` | Update the OpenClaw base image version |
-| `snowclaw push` | Push skills, workspace, config, and secrets to SPCS stage |
+| `snowclaw push` | Push skills and openclaw.json (and secrets) to SPCS stage |
 | `snowclaw push --secrets` | Update only Snowflake secrets and connections.toml (skip file sync) |
-| `snowclaw pull` | Pull skills, workspace, and config from SPCS stage |
+| `snowclaw pull` | Pull skills and openclaw.json from SPCS stage |
+| `snowclaw ls [path]` | List files in the SPCS workspace (paths workspace-relative) |
+| `snowclaw upload <local> [--dest <subdir>] [--force]` | Upload a local file into the SPCS workspace (live — agent sees it immediately) |
+| `snowclaw download <stage-path> [--dest <local-dir>]` | Download a file from the SPCS workspace |
 | `snowclaw network list` | Show current approved network rules |
 | `snowclaw network add <host>` | Add a network rule (prompts to apply) |
 | `snowclaw network remove <host>` | Remove a network rule |
@@ -145,6 +152,9 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 | `snowclaw channel add` | Interactive wizard to add a channel |
 | `snowclaw channel edit <name>` | Edit a channel's credentials |
 | `snowclaw channel remove <name>` | Remove a channel |
+| `snowclaw plugins list` | Show configured plugins |
+| `snowclaw plugins add <spec>` | Add a plugin (npm package or local path) |
+| `snowclaw plugins remove <id>` | Remove a plugin |
 | `snowclaw proxy setup` | Interactive wizard for standalone Cortex proxy |
 | `snowclaw proxy deploy` | Build, push, and deploy the standalone proxy to SPCS |
 | `snowclaw proxy status` | Show standalone proxy service status and endpoint |
@@ -152,7 +162,7 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 | `snowclaw proxy resume` | Resume the standalone proxy compute pool and service |
 | `snowclaw proxy logs` | Show standalone proxy container logs |
 
-`push` and `pull` accept `--workspace-only`, `--skills-only`, or `--config-only` to sync selectively.
+`push` and `pull` accept `--skills-only` or `--config-only` to sync selectively. Workspace files are intentionally outside `push`/`pull` — use `snowclaw upload` / `download` / `ls` (all paths are relative to the workspace root).
 
 ## Standalone Proxy
 
@@ -172,41 +182,55 @@ After deploying, `snowclaw proxy deploy` prints the public endpoint URL and a re
 
 Each user authenticates to the SPCS endpoint with their own Snowflake PAT. SPCS ingress validates the token and injects `Sf-Context-Current-User` for traceability, but strips the `Authorization` header before it reaches the container. To get the PAT through to Cortex, OpenClaw sends it in a custom `X-Cortex-Token` header which SPCS passes through untouched. The proxy reads this header and forwards it to Cortex as a Bearer token.
 
+The proxy exposes both endpoints:
+
+- **`/v1/chat/completions`** — OpenAI-shaped, for OpenAI/Snowflake/Llama models (also accepts Claude via Cortex's translation layer, but without native caching)
+- **`/v1/messages`** — Anthropic-shaped, for Claude models with native prompt caching support
+
 ### OpenClaw provider config
 
-Add this to your external OpenClaw's `openclaw.json`:
+Add this to your external OpenClaw's `openclaw.json`. Use two providers to route Claude models through the Messages endpoint (for native caching) and everything else through chat completions:
 
 ```json5
 {
   models: {
     providers: {
-      cortex: {
+      "cortex-claude": {
+        baseUrl: "https://<proxy-endpoint>",
+        apiKey: "${SNOWFLAKE_TOKEN}",
+        headers: {
+          "X-Cortex-Token": "${SNOWFLAKE_TOKEN}"
+        },
+        api: "anthropic-messages"
+      },
+      "cortex-openai": {
         baseUrl: "https://<proxy-endpoint>/v1",
         apiKey: "${SNOWFLAKE_TOKEN}",
         headers: {
           "X-Cortex-Token": "${SNOWFLAKE_TOKEN}"
         },
-        api: "openai-completions",
-        models: [
-          { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-          { id: "claude-opus-4-6", name: "Claude Opus 4.6" }
-        ]
+        api: "openai-completions"
       }
     }
   }
 }
 ```
 
+- `cortex-claude` — routes Claude models via `/v1/messages` with native `cache_control` marker support
+- `cortex-openai` — routes OpenAI, Snowflake, and Llama models via `/v1/chat/completions`
 - `apiKey` authenticates with SPCS ingress (sent as `Authorization: Snowflake Token="..."`)
 - `X-Cortex-Token` passes through ingress to the proxy, which forwards it to Cortex
 - Each user's PAT provides per-user identity and traceability via `Sf-Context-Current-User`
 
 ### Features
 
+- **Dual endpoints** — `/v1/chat/completions` for OpenAI-shaped requests, `/v1/messages` for Anthropic-shaped requests with native prompt caching
 - **No shared secrets** — each user sends their own PAT, no service-level token needed
 - **Per-user traceability** — SPCS injects `Sf-Context-Current-User` automatically
 - **Rate limit retry** — exponential backoff on Cortex 429 responses
-- **Request transforms** — parallel tool call serialization, max_tokens normalization
+- **Request transforms** — parallel tool call serialization, max_tokens normalization (chat completions only)
+- **1M context window** — automatic `anthropic-beta` header injection for Claude models
+- **Response metadata logging** — opt-in via `PROXY_LOG_RESPONSES` env var (usage stats, errors, cache hit rates)
 - **Minimal footprint** — single container on CPU_X64_XS compute pool
 
 ## License

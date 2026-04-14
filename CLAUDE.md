@@ -63,8 +63,12 @@ my-openclaw/                 # User's project directory
   build-hooks/               # User-editable build scripts (*.sh, run alphabetically at build time)
   skills/                    # User-editable skills (copied from templates/)
     cortex-code/
-  workspace/                 # Markdown knowledge base (starts empty)
+    snowclaw/
 ```
+
+The agent's `workspace/` lives only on the SPCS stage / container volume and
+is managed via `snowclaw upload` / `download` / `ls`. It is intentionally not
+scaffolded locally and is not part of `push` / `pull`.
 
 ### Build context layout (generated into `.snowclaw/build/`)
 
@@ -105,8 +109,11 @@ Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx 
 | `snowclaw restart` | Restart service to pick up config changes |
 | `snowclaw logs` | Fetch container logs (`-n`, `--container`, `--instance` flags) |
 | `snowclaw update` | Update `openclaw_version` in marker, optionally redeploy |
-| `snowclaw pull` | Pull from SPCS stage (`--workspace-only`, `--skills-only`, `--config-only`) |
-| `snowclaw push` | Push to SPCS stage (`--workspace-only`, `--skills-only`, `--config-only`) |
+| `snowclaw pull` | Pull skills/ and openclaw.json from SPCS stage (`--skills-only`, `--config-only`). Workspace files are not synced — use `snowclaw download` |
+| `snowclaw push` | Push skills/ and openclaw.json to SPCS stage (`--skills-only`, `--config-only`). Workspace files are not synced — use `snowclaw upload` |
+| `snowclaw ls [path]` | List files in the SPCS workspace (paths are workspace-relative) |
+| `snowclaw upload <local> [--dest <subdir>] [--force]` | Upload a local file into the SPCS workspace (live — agent sees it immediately) |
+| `snowclaw download <stage-path> [--dest <local-dir>]` | Download a file from the SPCS workspace to the local machine |
 | `snowclaw channel list` | Show configured channels |
 | `snowclaw channel add` | Interactive wizard to add a channel (Slack, Telegram, Discord) |
 | `snowclaw channel remove <name>` | Remove a channel |
@@ -383,8 +390,29 @@ Users can add custom Dockerfile layers via `build-hooks/` directory:
 - `snowclaw push --config-only` → uploads local config to stage
 - `snowclaw pull --config-only` → downloads config from stage
 - `snowclaw restart` → service picks up new config from volume
-- Skills and workspace also syncable via `--skills-only` / `--workspace-only`
-- No flags → syncs all three (skills + workspace + config)
+- Skills also syncable via `--skills-only`
+- No flags → syncs skills + config
+
+Workspace files are deliberately excluded from `push` / `pull` (they can be
+large and contain agent-generated artifacts). Move them with the dedicated
+file-transfer commands instead.
+
+## Workspace file transfer (`snowclaw ls` / `upload` / `download`)
+
+The agent's `workspace/` directory lives on the SPCS stage and is mounted
+live into the container at `/home/node/.openclaw/workspace`. Three commands
+move files in and out, all scoped to that directory:
+
+- `snowclaw ls [path]` — list workspace contents (paths workspace-relative).
+- `snowclaw upload <local> [--dest <subdir>] [--force]` — upload a file. The
+  underlying PUT is `OVERWRITE=TRUE`; the CLI prompts on existing destinations
+  unless `--force`. Local filename is preserved.
+- `snowclaw download <stage-path> [--dest <local-dir>]` — download a single
+  file. `--dest` defaults to cwd; basename is preserved.
+
+The `templates/skills/snowclaw/` skill teaches the agent to advise users on
+both these commands and the in-container presigned-URL flow (for chat-driven
+downloads).
 
 ## Plugins (`snowclaw/plugins.py`)
 

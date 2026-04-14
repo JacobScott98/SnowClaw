@@ -709,13 +709,11 @@ def cmd_update(args: argparse.Namespace):
 
 def _sync_targets(args: argparse.Namespace) -> list[str]:
     """Determine which targets to sync based on CLI flags."""
-    if getattr(args, "workspace_only", False):
-        return ["workspace"]
     if getattr(args, "skills_only", False):
         return ["skills"]
     if getattr(args, "config_only", False):
         return ["config"]
-    return ["skills", "workspace", "config"]
+    return ["skills", "config"]
 
 
 def cmd_pull(args: argparse.Namespace):
@@ -795,7 +793,7 @@ def cmd_push(args: argparse.Namespace):
 
     secrets_only = getattr(args, "secrets", False)
     has_target_flag = any(
-        getattr(args, f, False) for f in ("workspace_only", "skills_only", "config_only")
+        getattr(args, f, False) for f in ("skills_only", "config_only")
     )
 
     # Push targets unless --secrets is used alone
@@ -910,6 +908,171 @@ def cmd_push(args: argparse.Namespace):
     console.print(
         "[yellow]Note:[/yellow] The container may take a minute or two to fully spin up."
     )
+
+
+# ---------------------------------------------------------------------------
+# snowclaw ls / upload / download (workspace-scoped file transfer)
+# ---------------------------------------------------------------------------
+
+
+WORKSPACE_PREFIX = "workspace"
+
+
+def _open_workspace_connection(root: Path):
+    """Open a Snowflake connection for workspace operations.
+
+    Returns (conn, fqn_stage). Exits with an error message if credentials are
+    missing.
+    """
+    from snowclaw.stage import get_sf_connection
+
+    ctx = load_snowflake_context(root)
+    account = ctx["account"]
+    token = ctx["token"]
+    sf_user = ctx["user"]
+    names = ctx["names"]
+
+    if not all([account, token, sf_user]):
+        console.print("[red]Missing required credentials in .env.[/red]")
+        console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
+        sys.exit(1)
+
+    fqn_stage = f"{names['schema']}.{names['stage']}"
+    conn = get_sf_connection(
+        account=account,
+        user=sf_user,
+        token=token,
+        warehouse=ctx["warehouse"],
+        database=names["db"],
+        schema=names["schema_name"],
+    )
+    return conn, fqn_stage
+
+
+def _normalize_workspace_path(path: str | None) -> str:
+    """Strip leading slashes and normalize separators for a workspace-relative path."""
+    if not path:
+        return ""
+    cleaned = path.strip().lstrip("/").rstrip("/")
+    return cleaned
+
+
+def _format_size(num_bytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if num_bytes < 1024:
+            return f"{num_bytes:.1f} {unit}" if unit != "B" else f"{num_bytes} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} TB"
+
+
+def cmd_ls(args: argparse.Namespace):
+    """List files in the SPCS workspace."""
+    from rich.table import Table
+
+    from snowclaw.stage import stage_list
+
+    render_banner()
+    root = find_project_root()
+
+    rel = _normalize_workspace_path(getattr(args, "path", None))
+    stage_prefix = f"{WORKSPACE_PREFIX}/{rel}" if rel else f"{WORKSPACE_PREFIX}/"
+
+    conn, fqn_stage = _open_workspace_connection(root)
+    try:
+        files = stage_list(conn, fqn_stage, prefix=stage_prefix)
+    finally:
+        conn.close()
+
+    display_label = rel if rel else "(root)"
+    if not files:
+        console.print(f"[dim]No files in workspace/{rel}[/dim]" if rel else "[dim]Workspace is empty.[/dim]")
+        return
+
+    table = Table(title=f"workspace/{rel}" if rel else "workspace/", show_header=True, header_style="bold")
+    table.add_column("path")
+    table.add_column("size", justify="right")
+    table.add_column("md5", style="dim")
+
+    workspace_marker = f"/{WORKSPACE_PREFIX}/"
+    for f in sorted(files, key=lambda r: r["name"]):
+        full_name = f["name"]
+        idx = full_name.find(workspace_marker)
+        rel_path = full_name[idx + len(workspace_marker):] if idx >= 0 else full_name
+        table.add_row(rel_path, _format_size(int(f["size"])), f["md5"] or "")
+
+    console.print(table)
+    console.print(f"[dim]{len(files)} file(s) under workspace/{rel}[/dim]" if rel else f"[dim]{len(files)} file(s) in workspace/[/dim]")
+
+
+def cmd_upload(args: argparse.Namespace):
+    """Upload a file to the SPCS workspace (live — agent sees it immediately)."""
+    from snowclaw.stage import stage_file_exists, stage_push_file
+
+    render_banner()
+    root = find_project_root()
+
+    local_path = Path(args.local_path).expanduser().resolve()
+    if not local_path.exists():
+        console.print(f"[red]Local file not found:[/red] {local_path}")
+        sys.exit(1)
+    if local_path.is_dir():
+        console.print("[red]Directory uploads are not supported.[/red] Upload individual files (or tar/zip first).")
+        sys.exit(1)
+
+    dest_dir = _normalize_workspace_path(getattr(args, "dest", None))
+    stage_dir = f"{WORKSPACE_PREFIX}/{dest_dir}" if dest_dir else WORKSPACE_PREFIX
+    target_path = f"{stage_dir}/{local_path.name}"
+
+    conn, fqn_stage = _open_workspace_connection(root)
+    try:
+        if not getattr(args, "force", False):
+            if stage_file_exists(conn, fqn_stage, target_path):
+                proceed = inquirer.confirm(
+                    message=f"workspace/{dest_dir + '/' if dest_dir else ''}{local_path.name} already exists. Overwrite?",
+                    default=False,
+                ).execute()
+                if not proceed:
+                    console.print("[yellow]Upload cancelled.[/yellow]")
+                    return
+
+        console.print(f"[bold]Uploading {local_path.name} → workspace/{dest_dir + '/' if dest_dir else ''}{local_path.name}...[/bold]")
+        stage_push_file(conn, fqn_stage, str(local_path), stage_dir)
+    finally:
+        conn.close()
+
+    console.print(f"  [green]✓[/green] Uploaded to workspace/{dest_dir + '/' if dest_dir else ''}{local_path.name}")
+    console.print("[dim]The workspace volume is live-mounted — the agent sees this file immediately.[/dim]")
+
+
+def cmd_download(args: argparse.Namespace):
+    """Download a file from the SPCS workspace to the local machine."""
+    from snowclaw.stage import stage_file_exists, stage_pull_file
+
+    render_banner()
+    root = find_project_root()
+
+    rel = _normalize_workspace_path(args.stage_path)
+    if not rel:
+        console.print("[red]Specify a workspace-relative path to download.[/red]")
+        sys.exit(1)
+    stage_path = f"{WORKSPACE_PREFIX}/{rel}"
+
+    dest_dir = Path(getattr(args, "dest", None) or ".").expanduser().resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    conn, fqn_stage = _open_workspace_connection(root)
+    try:
+        if not stage_file_exists(conn, fqn_stage, stage_path):
+            console.print(f"[red]Not found on stage:[/red] workspace/{rel}")
+            sys.exit(1)
+
+        console.print(f"[bold]Downloading workspace/{rel} → {dest_dir}/...[/bold]")
+        stage_pull_file(conn, fqn_stage, stage_path, str(dest_dir))
+    finally:
+        conn.close()
+
+    local_file = dest_dir / Path(rel).name
+    console.print(f"  [green]✓[/green] Downloaded to {local_file}")
 
 
 # ---------------------------------------------------------------------------
@@ -1960,15 +2123,24 @@ def _proxy_deploy(args: argparse.Namespace):
     console.print("[green]Proxy deployment complete.[/green]")
 
     # Print OpenClaw provider config snippet
-    base_url = f"{endpoint_url}/v1" if endpoint_url else "https://<proxy-endpoint>/v1"
+    base_url_root = endpoint_url if endpoint_url else "https://<proxy-endpoint>"
+    base_url_v1 = f"{base_url_root}/v1"
     console.print()
     console.print(Panel(
         '[bold]Add this to your openclaw.json to connect through the proxy:[/bold]\n\n'
         '[cyan]{\n'
         '  "models": {\n'
         '    "providers": {\n'
-        '      "cortex": {\n'
-        f'        "baseUrl": "{base_url}",\n'
+        '      "cortex-claude": {\n'
+        f'        "baseUrl": "{base_url_root}",\n'
+        '        "apiKey": "$SNOWFLAKE_TOKEN",\n'
+        '        "headers": {\n'
+        '          "X-Cortex-Token": "$SNOWFLAKE_TOKEN"\n'
+        '        },\n'
+        '        "api": "anthropic-messages"\n'
+        '      },\n'
+        '      "cortex-openai": {\n'
+        f'        "baseUrl": "{base_url_v1}",\n'
         '        "apiKey": "$SNOWFLAKE_TOKEN",\n'
         '        "headers": {\n'
         '          "X-Cortex-Token": "$SNOWFLAKE_TOKEN"\n'
@@ -1978,9 +2150,10 @@ def _proxy_deploy(args: argparse.Namespace):
         '    }\n'
         '  }\n'
         '}[/cyan]\n\n'
-        '[dim]Each user authenticates to the endpoint with their own PAT.\n'
-        'The apiKey handles SPCS ingress auth, while X-Cortex-Token\n'
-        'is passed through to Cortex for the actual LLM request.[/dim]',
+        '[dim]Use cortex-claude for Claude models (native caching via /v1/messages).\n'
+        'Use cortex-openai for OpenAI, Snowflake, and Llama models (/v1/chat/completions).\n'
+        'Each user authenticates with their own PAT — apiKey handles SPCS ingress auth,\n'
+        'while X-Cortex-Token is passed through to Cortex for the actual LLM request.[/dim]',
         title="OpenClaw Provider Config",
         border_style="green",
         expand=False,
