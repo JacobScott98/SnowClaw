@@ -15,6 +15,7 @@ from snowclaw.network import (
     build_network_rule_sql,
     get_channel_secrets,
     get_env_secrets,
+    load_network_config,
     load_network_rules,
 )
 from snowclaw.utils import console, get_templates_dir, read_marker, sf_names, sf_proxy_names
@@ -314,13 +315,21 @@ def assemble_build_context(root: Path) -> Path:
 
     # Generate network-rules.sql from saved rules
     names = sf_names(database, schema_name)
-    rules = load_network_rules(root)
-    if rules:
-        stmts = build_network_rule_sql(names, rules)
+    net_cfg = load_network_config(root)
+    if net_cfg.allow_all_egress or net_cfg.rules:
+        stmts = build_network_rule_sql(
+            names, net_cfg.rules, allow_all=net_cfg.allow_all_egress
+        )
         if stmts:
+            header_note = (
+                "-- MODE: ALLOW ALL (0.0.0.0:443, 0.0.0.0:80)\n"
+                if net_cfg.allow_all_egress
+                else ""
+            )
             header = (
                 "-- Network rules (generated from .snowclaw/network-rules.json)\n"
-                "-- Manage with: snowclaw network list|add|remove|apply|detect\n\n"
+                "-- Manage with: snowclaw network list|add|remove|apply|detect\n"
+                f"{header_note}\n"
             )
             (spcs_dir / "network-rules.sql").write_text(
                 header + ";\n\n".join(stmts) + ";\n"

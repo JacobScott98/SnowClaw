@@ -40,26 +40,70 @@ class NetworkRule:
 
 RULES_FILE = "network-rules.json"
 
+# Snowflake's documented "allow all outbound" pattern for MODE=EGRESS TYPE=HOST_PORT
+# rules. `0.0.0.0` is the catch-all host; only 443 and 80 are accepted as ports.
+# https://docs.snowflake.com/en/user-guide/network-rules
+ALLOW_ALL_VALUE_LIST: tuple[str, ...] = ("0.0.0.0:443", "0.0.0.0:80")
+
+
+@dataclass
+class NetworkRulesConfig:
+    """On-disk shape of ``.snowclaw/network-rules.json``.
+
+    ``rules`` is preserved even when ``allow_all_egress`` is True so toggling
+    back to restrict mode restores the user's prior allowlist.
+    """
+
+    allow_all_egress: bool = False
+    rules: list[NetworkRule] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.rules is None:
+            self.rules = []
+
 
 def _rules_path(root: Path) -> Path:
     return root / ".snowclaw" / RULES_FILE
 
 
-def load_network_rules(root: Path) -> list[NetworkRule]:
-    """Load network rules from .snowclaw/network-rules.json."""
+def load_network_config(root: Path) -> NetworkRulesConfig:
+    """Load the full network rules config (mode + rules).
+
+    Tolerant of legacy files that only contain ``{"rules": [...]}`` — the
+    ``allow_all_egress`` flag defaults to False.
+    """
     path = _rules_path(root)
     if not path.exists():
-        return []
+        return NetworkRulesConfig()
     data = json.loads(path.read_text())
-    return [NetworkRule(**r) for r in data.get("rules", [])]
+    rules = [NetworkRule(**r) for r in data.get("rules", [])]
+    return NetworkRulesConfig(
+        allow_all_egress=bool(data.get("allow_all_egress", False)),
+        rules=rules,
+    )
+
+
+def save_network_config(root: Path, cfg: NetworkRulesConfig):
+    """Persist the full network rules config."""
+    path = _rules_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "allow_all_egress": cfg.allow_all_egress,
+        "rules": [asdict(r) for r in cfg.rules],
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def load_network_rules(root: Path) -> list[NetworkRule]:
+    """Back-compat shim: return just the rules list."""
+    return load_network_config(root).rules
 
 
 def save_network_rules(root: Path, rules: list[NetworkRule]):
-    """Save network rules to .snowclaw/network-rules.json."""
-    path = _rules_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"rules": [asdict(r) for r in rules]}
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    """Back-compat shim: preserve ``allow_all_egress`` while updating rules."""
+    cfg = load_network_config(root)
+    cfg.rules = rules
+    save_network_config(root, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -360,25 +404,64 @@ def print_diff(added: list[NetworkRule], removed: list[NetworkRule]):
         )
 
 
+def print_allow_all_warning():
+    """Print the red warning shown before enabling allow-all egress mode."""
+    from rich.panel import Panel
+
+    body = (
+        "[bold]Enabling allow-all egress removes SPCS's default outbound hardening.[/bold]\n\n"
+        "While this mode is active the agent can reach any host on ports 443 and 80,\n"
+        "including internal corporate URLs, arbitrary third-party APIs, and\n"
+        "unreviewed destinations. The Cortex proxy's secret masking still runs, but\n"
+        "masking is not a substitute for an egress allowlist — a compromised or\n"
+        "unintentionally malicious plugin / tool can exfiltrate unmasked data.\n\n"
+        "Recommended only for: internal development, exploration, and deployments\n"
+        "where you have no compliance obligations. Do not enable in production for\n"
+        "regulated workloads."
+    )
+    console.print(
+        Panel(
+            body,
+            title="[bold red]⚠  Allow-all egress[/bold red]",
+            border_style="red",
+            expand=False,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # SQL generation
 # ---------------------------------------------------------------------------
 
 
-def build_network_rule_sql(names: dict, rules: list[NetworkRule]) -> list[str]:
+def _format_value_list(items: list[str] | tuple[str, ...]) -> str:
+    return ", ".join(f"'{v}'" for v in items)
+
+
+def build_network_rule_sql(
+    names: dict,
+    rules: list[NetworkRule],
+    allow_all: bool = False,
+) -> list[str]:
     """Build standalone SQL statements for the reference ``network-rules.sql`` file.
 
     Uses CREATE OR REPLACE so the file can be applied to a fresh schema in one
     shot. The runtime apply path (``apply_network_rules``) prefers ALTER for
     steady-state updates so the NR object identity is preserved and the EAI
     binding stays valid without an SPCS service restart.
+
+    When ``allow_all`` is True, the rule's VALUE_LIST is
+    ``('0.0.0.0:443', '0.0.0.0:80')`` — Snowflake's documented allow-all
+    pattern — and the ``rules`` argument is ignored.
     """
-    if not rules:
+    if allow_all:
+        value_list = _format_value_list(ALLOW_ALL_VALUE_LIST)
+    elif rules:
+        value_list = _format_value_list([r.host_port for r in rules])
+    else:
         return []
 
     s = names["schema"]
-    value_list = ", ".join(f"'{r.host_port}'" for r in rules)
-
     return [
         (
             f"CREATE OR REPLACE NETWORK RULE {s}.{names['egress_rule']} "
@@ -412,7 +495,11 @@ def _external_access_integration_exists(account: str, pat: str, name: str) -> bo
 
 
 def apply_network_rules(
-    account: str, pat: str, names: dict, rules: list[NetworkRule]
+    account: str,
+    pat: str,
+    names: dict,
+    rules: list[NetworkRule],
+    allow_all: bool = False,
 ) -> bool:
     """Apply network rules to Snowflake via REST API.
 
@@ -421,16 +508,22 @@ def apply_network_rules(
     service picks up the new host list without a restart. The NR and EAI are
     only issued as ``CREATE`` when they don't already exist.
 
+    When ``allow_all`` is True, the applied VALUE_LIST is
+    ``('0.0.0.0:443', '0.0.0.0:80')`` regardless of ``rules``.
+
     Returns True if successful, False otherwise.
     """
-    if not rules:
+    if allow_all:
+        value_list = _format_value_list(ALLOW_ALL_VALUE_LIST)
+    elif rules:
+        value_list = _format_value_list([r.host_port for r in rules])
+    else:
         console.print("  [dim]No network rules to apply.[/dim]")
         return True
 
     s = names["schema"]
     egress = names["egress_rule"]
     eai = names["external_access"]
-    value_list = ", ".join(f"'{r.host_port}'" for r in rules)
 
     try:
         nr_exists = _network_rule_exists(account, pat, s, egress)
@@ -489,11 +582,21 @@ def prompt_and_apply_rules(
 ) -> list[NetworkRule]:
     """Detect required rules, show diff, prompt for approval, and apply.
 
-    Returns the final approved rule list.
+    Returns the final approved rule list. In allow-all mode this short-circuits
+    the diff flow and just ensures the NR is in allow-all state.
     """
     from InquirerPy import inquirer
 
-    current = load_network_rules(root)
+    cfg = load_network_config(root)
+    current = cfg.rules
+    if cfg.allow_all_egress:
+        console.print(
+            "[bold red]Egress mode: ALLOW ALL[/bold red] "
+            "[dim](unrestricted — 0.0.0.0:443, 0.0.0.0:80)[/dim]"
+        )
+        apply_network_rules(account, pat, names, current, allow_all=True)
+        return current
+
     if detected is None:
         detected = detect_required_rules(root)
 
@@ -590,8 +693,11 @@ def offer_apply_rules(root: Path):
         if not ctx["account"] or not ctx["token"]:
             console.print("[red]Missing Snowflake credentials in .env.[/red]")
             return
-        rules = load_network_rules(root)
-        success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+        cfg = load_network_config(root)
+        success = apply_network_rules(
+            ctx["account"], ctx["token"], ctx["names"], cfg.rules,
+            allow_all=cfg.allow_all_egress,
+        )
         if success:
             console.print("[green]Network rules applied to Snowflake.[/green]")
         else:

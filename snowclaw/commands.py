@@ -24,19 +24,23 @@ from snowclaw.channels import (
     channel_remove,
 )
 from snowclaw.network import (
+    ALLOW_ALL_VALUE_LIST,
     CHANNEL_REGISTRY,
     TOOL_REGISTRY,
     NetworkRule,
+    NetworkRulesConfig,
     apply_network_rules,
     detect_required_rules,
     diff_rules,
     format_rules_table,
     get_channel_secrets,
     get_env_secrets,
+    load_network_config,
     load_network_rules,
     offer_apply_rules,
     parse_host_port,
     print_diff,
+    save_network_config,
     save_network_rules,
 )
 from snowclaw.scaffold import assemble_build_context, assemble_proxy_build_context, scaffold_user_files
@@ -258,6 +262,27 @@ def cmd_setup(args: argparse.Namespace):
     else:
         console.print("  [dim]No external network rules detected.[/dim]")
 
+    # Offer the allow-all opt-in after the safe-default allowlist flow above.
+    console.print()
+    skip_allowlist = inquirer.confirm(
+        message="Skip the allowlist and permit all outbound traffic instead? (not recommended)",
+        default=False,
+    ).execute()
+    if skip_allowlist:
+        from snowclaw.network import print_allow_all_warning
+
+        print_allow_all_warning()
+        console.print()
+        confirm_allow_all = inquirer.confirm(
+            message="Enable allow-all egress?",
+            default=False,
+        ).execute()
+        if confirm_allow_all:
+            cfg = load_network_config(root)
+            cfg.allow_all_egress = True
+            save_network_config(root, cfg)
+            console.print("[bold red]Allow-all egress enabled.[/bold red]")
+
     # --- Optionally create Snowflake objects ---
     console.print()
     create_objects = inquirer.confirm(
@@ -265,7 +290,7 @@ def cmd_setup(args: argparse.Namespace):
         default=True,
     ).execute()
 
-    approved_rules = load_network_rules(root)
+    cfg = load_network_config(root)
 
     if create_objects:
         console.print()
@@ -276,11 +301,12 @@ def cmd_setup(args: argparse.Namespace):
         except Exception:
             console.print("[yellow]Some objects may not have been created. You can retry or create them manually.[/yellow]")
 
-        # Apply approved network rules
-        if approved_rules:
+        # Apply approved network rules (or allow-all)
+        if cfg.allow_all_egress or cfg.rules:
             console.print()
             apply_network_rules(
-                settings["account"], settings["pat"], names, approved_rules
+                settings["account"], settings["pat"], names, cfg.rules,
+                allow_all=cfg.allow_all_egress,
             )
 
     # --- Summary ---
@@ -476,41 +502,51 @@ def cmd_deploy(args: argparse.Namespace):
 
     # Check network rules before deploying
     console.print("[bold]Checking network rules...[/bold]")
-    current_rules = load_network_rules(root)
-    detected_rules = detect_required_rules(root)
-    added, removed = diff_rules(current_rules, detected_rules)
+    cfg = load_network_config(root)
+    current_rules = cfg.rules
 
-    if added or removed:
-        console.print()
-        console.print("[bold]Network rule changes detected:[/bold]")
-        print_diff(added, removed)
-        console.print()
-        approve = inquirer.confirm(
-            message="Approve these network rule changes?",
-            default=True,
-        ).execute()
-        if approve:
-            # Merge changes
-            removed_set = {(r.host, r.port) for r in removed}
-            merged = [r for r in current_rules if (r.host, r.port) not in removed_set]
-            existing_set = {(r.host, r.port) for r in merged}
-            for r in added:
-                if (r.host, r.port) not in existing_set:
-                    merged.append(r)
-            save_network_rules(root, merged)
-            apply_network_rules(account, token, names, merged)
-            console.print()
-        else:
-            console.print("[dim]Keeping existing network rules.[/dim]")
-            if current_rules:
-                console.print()
-    elif current_rules:
-        console.print(f"  [green]✓[/green] {len(current_rules)} rules up to date")
+    if cfg.allow_all_egress:
+        console.print(
+            "  [bold red]Egress mode: ALLOW ALL[/bold red] "
+            "[dim](unrestricted — 0.0.0.0:443, 0.0.0.0:80)[/dim]"
+        )
+        apply_network_rules(account, token, names, current_rules, allow_all=True)
         console.print()
     else:
-        console.print("  [yellow]No network rules configured.[/yellow]")
-        console.print("  [dim]External access will be unavailable. Use [cyan]snowclaw network add <host>[/cyan] to add rules.[/dim]")
-        console.print()
+        detected_rules = detect_required_rules(root)
+        added, removed = diff_rules(current_rules, detected_rules)
+
+        if added or removed:
+            console.print()
+            console.print("[bold]Network rule changes detected:[/bold]")
+            print_diff(added, removed)
+            console.print()
+            approve = inquirer.confirm(
+                message="Approve these network rule changes?",
+                default=True,
+            ).execute()
+            if approve:
+                # Merge changes
+                removed_set = {(r.host, r.port) for r in removed}
+                merged = [r for r in current_rules if (r.host, r.port) not in removed_set]
+                existing_set = {(r.host, r.port) for r in merged}
+                for r in added:
+                    if (r.host, r.port) not in existing_set:
+                        merged.append(r)
+                save_network_rules(root, merged)
+                apply_network_rules(account, token, names, merged)
+                console.print()
+            else:
+                console.print("[dim]Keeping existing network rules.[/dim]")
+                if current_rules:
+                    console.print()
+        elif current_rules:
+            console.print(f"  [green]✓[/green] {len(current_rules)} rules up to date")
+            console.print()
+        else:
+            console.print("  [yellow]No network rules configured.[/yellow]")
+            console.print("  [dim]External access will be unavailable. Use [cyan]snowclaw network add <host>[/cyan] to add rules.[/dim]")
+            console.print()
 
     # Assemble build context
     console.print("[bold]Assembling build context...[/bold]")
@@ -1094,19 +1130,45 @@ def cmd_network(args: argparse.Namespace):
         "remove": _network_remove,
         "apply": _network_apply,
         "detect": _network_detect,
+        "allow-all": _network_allow_all,
+        "restrict": _network_restrict,
     }
     handler = dispatch.get(sub)
     if handler:
         handler(args)
 
 
+def _print_allow_all_banner():
+    console.print(
+        "[bold red]Egress mode: ALLOW ALL[/bold red] "
+        "[dim](unrestricted — 0.0.0.0:443, 0.0.0.0:80)[/dim]"
+    )
+
+
+def _print_allow_all_warning_note(action: str):
+    console.print(
+        f"[yellow]Note:[/yellow] allow-all egress is active; this {action} won't take effect "
+        "until you run [cyan]snowclaw network restrict[/cyan]."
+    )
+
+
 def _network_list(args: argparse.Namespace):
     """List current approved network rules."""
     render_banner()
     root = find_project_root()
-    rules = load_network_rules(root)
+    cfg = load_network_config(root)
 
-    if not rules:
+    if cfg.allow_all_egress:
+        _print_allow_all_banner()
+        console.print()
+        if cfg.rules:
+            console.print(
+                "[dim]Saved allowlist (restored on [cyan]snowclaw network restrict[/cyan]):[/dim]"
+            )
+            console.print(format_rules_table(cfg.rules))
+        return
+
+    if not cfg.rules:
         console.print("[dim]No network rules configured.[/dim]")
         console.print(
             "Run [cyan]snowclaw network detect[/cyan] to auto-detect required rules,"
@@ -1116,15 +1178,16 @@ def _network_list(args: argparse.Namespace):
         )
         return
 
-    console.print(format_rules_table(rules))
-    console.print(f"\n[dim]{len(rules)} rule(s) total[/dim]")
+    console.print(format_rules_table(cfg.rules))
+    console.print(f"\n[dim]{len(cfg.rules)} rule(s) total[/dim]")
 
 
 def _network_add(args: argparse.Namespace):
     """Add a network rule."""
     render_banner()
     root = find_project_root()
-    rules = load_network_rules(root)
+    cfg = load_network_config(root)
+    rules = cfg.rules
 
     host_input = getattr(args, "host", None)
     if not host_input:
@@ -1151,6 +1214,10 @@ def _network_add(args: argparse.Namespace):
     save_network_rules(root, rules)
     console.print(f"[green]✓[/green] Added [cyan]{new_rule.host_port}[/cyan]")
 
+    if cfg.allow_all_egress:
+        _print_allow_all_warning_note("rule")
+        return
+
     # Offer to apply immediately
     offer_apply_rules(root)
 
@@ -1159,7 +1226,8 @@ def _network_remove(args: argparse.Namespace):
     """Remove a network rule."""
     render_banner()
     root = find_project_root()
-    rules = load_network_rules(root)
+    cfg = load_network_config(root)
+    rules = cfg.rules
 
     host_input = getattr(args, "host", None)
     if not host_input:
@@ -1177,6 +1245,10 @@ def _network_remove(args: argparse.Namespace):
     save_network_rules(root, rules)
     console.print(f"[green]✓[/green] Removed [cyan]{host}:{port}[/cyan]")
 
+    if cfg.allow_all_egress:
+        _print_allow_all_warning_note("removal")
+        return
+
     # Offer to apply immediately
     offer_apply_rules(root)
 
@@ -1185,32 +1257,46 @@ def _network_apply(args: argparse.Namespace):
     """Apply current network rules to Snowflake."""
     render_banner()
     root = find_project_root()
-    rules = load_network_rules(root)
+    cfg = load_network_config(root)
 
-    if not rules:
-        console.print("[yellow]No network rules to apply.[/yellow]")
-        console.print("Add rules with [cyan]snowclaw network add <host>[/cyan] first.")
-        return
+    if cfg.allow_all_egress:
+        _print_allow_all_banner()
+        console.print()
+        approved = inquirer.confirm(
+            message="Apply allow-all egress to Snowflake?",
+            default=True,
+        ).execute()
+        if not approved:
+            console.print("[dim]Aborted.[/dim]")
+            return
+    else:
+        if not cfg.rules:
+            console.print("[yellow]No network rules to apply.[/yellow]")
+            console.print("Add rules with [cyan]snowclaw network add <host>[/cyan] first.")
+            return
 
-    console.print("[bold]Current network rules:[/bold]")
-    console.print(format_rules_table(rules))
-    console.print()
+        console.print("[bold]Current network rules:[/bold]")
+        console.print(format_rules_table(cfg.rules))
+        console.print()
 
-    approved = inquirer.confirm(
-        message=f"Apply {len(rules)} rule(s) to Snowflake?",
-        default=True,
-    ).execute()
+        approved = inquirer.confirm(
+            message=f"Apply {len(cfg.rules)} rule(s) to Snowflake?",
+            default=True,
+        ).execute()
 
-    if not approved:
-        console.print("[dim]Aborted.[/dim]")
-        return
+        if not approved:
+            console.print("[dim]Aborted.[/dim]")
+            return
 
     ctx = load_snowflake_context(root)
     if not ctx["account"] or not ctx["token"]:
         console.print("[red]Missing Snowflake credentials in .env.[/red]")
         sys.exit(1)
 
-    success = apply_network_rules(ctx["account"], ctx["token"], ctx["names"], rules)
+    success = apply_network_rules(
+        ctx["account"], ctx["token"], ctx["names"], cfg.rules,
+        allow_all=cfg.allow_all_egress,
+    )
     if success:
         console.print()
         console.print("[green]Network rules applied to Snowflake.[/green]")
@@ -1224,8 +1310,17 @@ def _network_detect(args: argparse.Namespace):
     """Auto-detect required network rules from project config."""
     render_banner()
     root = find_project_root()
+    cfg = load_network_config(root)
 
-    current = load_network_rules(root)
+    if cfg.allow_all_egress:
+        _print_allow_all_banner()
+        console.print(
+            "[dim]Detection is skipped in allow-all mode. Run "
+            "[cyan]snowclaw network restrict[/cyan] to return to the allowlist.[/dim]"
+        )
+        return
+
+    current = cfg.rules
     detected = detect_required_rules(root)
 
     if not detected:
@@ -1269,6 +1364,108 @@ def _network_detect(args: argparse.Namespace):
         offer_apply_rules(root)
     else:
         console.print("[dim]Rules not saved.[/dim]")
+
+
+def _network_allow_all(args: argparse.Namespace):
+    """Enable allow-all egress mode (all outbound on ports 443 and 80)."""
+    from snowclaw.network import print_allow_all_warning
+
+    render_banner()
+    root = find_project_root()
+    cfg = load_network_config(root)
+
+    if cfg.allow_all_egress:
+        _print_allow_all_banner()
+        console.print("[dim]Already enabled. Nothing to do.[/dim]")
+        return
+
+    print_allow_all_warning()
+    console.print()
+    confirm_enable = inquirer.confirm(
+        message="Enable allow-all egress?",
+        default=False,
+    ).execute()
+    if not confirm_enable:
+        console.print("[dim]Aborted. Allowlist mode retained.[/dim]")
+        return
+
+    cfg.allow_all_egress = True
+    save_network_config(root, cfg)
+    console.print("[bold red]Allow-all egress enabled.[/bold red]")
+
+    apply_now = inquirer.confirm(
+        message="Apply to Snowflake now?",
+        default=True,
+    ).execute()
+    if not apply_now:
+        console.print(
+            "[dim]Run [cyan]snowclaw network apply[/cyan] when you're ready.[/dim]"
+        )
+        return
+
+    ctx = load_snowflake_context(root)
+    if not ctx["account"] or not ctx["token"]:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        return
+    success = apply_network_rules(
+        ctx["account"], ctx["token"], ctx["names"], cfg.rules, allow_all=True,
+    )
+    if success:
+        console.print("[green]Applied to Snowflake.[/green]")
+    else:
+        console.print(
+            "[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]"
+        )
+
+
+def _network_restrict(args: argparse.Namespace):
+    """Disable allow-all mode and re-apply the saved allowlist."""
+    render_banner()
+    root = find_project_root()
+    cfg = load_network_config(root)
+
+    if not cfg.allow_all_egress:
+        console.print("[dim]Already in allowlist mode. Nothing to do.[/dim]")
+        return
+
+    cfg.allow_all_egress = False
+    save_network_config(root, cfg)
+    console.print("[green]Allowlist mode restored.[/green]")
+
+    if not cfg.rules:
+        console.print(
+            "[yellow]No rules saved.[/yellow] Run [cyan]snowclaw network detect[/cyan] "
+            "to populate the allowlist from your config."
+        )
+        return
+
+    console.print("[bold]Saved rules:[/bold]")
+    console.print(format_rules_table(cfg.rules))
+    console.print()
+
+    apply_now = inquirer.confirm(
+        message=f"Apply {len(cfg.rules)} rule(s) to Snowflake now?",
+        default=True,
+    ).execute()
+    if not apply_now:
+        console.print(
+            "[dim]Run [cyan]snowclaw network apply[/cyan] when you're ready.[/dim]"
+        )
+        return
+
+    ctx = load_snowflake_context(root)
+    if not ctx["account"] or not ctx["token"]:
+        console.print("[red]Missing Snowflake credentials in .env.[/red]")
+        return
+    success = apply_network_rules(
+        ctx["account"], ctx["token"], ctx["names"], cfg.rules, allow_all=False,
+    )
+    if success:
+        console.print("[green]Applied to Snowflake.[/green]")
+    else:
+        console.print(
+            "[red]Failed to apply. Retry with [cyan]snowclaw network apply[/cyan].[/red]"
+        )
 
 
 def cmd_status(args: argparse.Namespace):

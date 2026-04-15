@@ -121,11 +121,13 @@ Multi-module Python CLI using argparse + Rich + InquirerPy. Installed via `pipx 
 | `snowclaw plugins list` | List configured plugins |
 | `snowclaw plugins add <spec>` | Add a plugin (npm package or local path) |
 | `snowclaw plugins remove <id>` | Remove a plugin |
-| `snowclaw network list` | Show current approved network rules |
+| `snowclaw network list` | Show current approved network rules (and egress mode) |
 | `snowclaw network add <host[:port]>` | Add a network rule, prompts to apply |
 | `snowclaw network remove <host[:port]>` | Remove a network rule, prompts to apply |
 | `snowclaw network detect` | Auto-detect rules from config, show diff, optionally save and apply |
-| `snowclaw network apply` | Push all saved rules to Snowflake |
+| `snowclaw network apply` | Push saved rules (or allow-all) to Snowflake |
+| `snowclaw network allow-all` | Enable unrestricted egress (`0.0.0.0:443`, `0.0.0.0:80`) — red warning + confirm |
+| `snowclaw network restrict` | Disable allow-all and re-apply the saved allowlist |
 | `snowclaw proxy setup` | Interactive wizard for standalone Cortex proxy deployment |
 | `snowclaw proxy deploy` | Build, push, and deploy standalone proxy to SPCS |
 | `snowclaw proxy status` | Show standalone proxy service status and endpoint |
@@ -362,17 +364,24 @@ SPCS blocks all outbound traffic by default. SnowClaw manages network rules and 
 ### How it works
 
 1. **Auto-detection** (`detect_required_rules()`): Parses `openclaw.json` for provider/channel/tool hostnames. Always includes `*.snowflakecomputing.com:443` for Cortex.
-2. **Persistence**: Rules saved to `.snowclaw/network-rules.json` (committed to git).
+2. **Persistence**: `.snowclaw/network-rules.json` holds `{ "allow_all_egress": bool, "rules": [...] }` (committed to git). Legacy files without `allow_all_egress` default to `false`.
 3. **Diff engine** (`diff_rules()`): Compares saved vs. detected rules. Returns `(added, removed)`.
 4. **SQL generation**: Steady-state updates use `ALTER NETWORK RULE … SET VALUE_LIST = (…)`; the NR and EAI are only `CREATE`d when missing (existence checked via `SHOW NETWORK RULES` / `SHOW EXTERNAL ACCESS INTEGRATIONS`). The reference `network-rules.sql` file emitted into the build context still uses `CREATE OR REPLACE` for one-shot apply to fresh schemas.
 5. **Application**: Executes via Snowflake REST API. Changes take effect without redeploying the SPCS service — the NR object identity is preserved by `ALTER`, so the EAI binding stays valid.
 
+### Egress modes
+
+Two modes, stored in `network-rules.json`:
+
+- **Allowlist** (default, safe): detection/diff/approve flow above. Exactly the required hosts are permitted.
+- **Allow all** (opt-in): `VALUE_LIST = ('0.0.0.0:443', '0.0.0.0:80')` — Snowflake's documented catch-all host pattern, which only supports ports 443 and 80 ([Snowflake docs: Network rules](https://docs.snowflake.com/en/user-guide/network-rules)). Enabled via `snowclaw network allow-all` behind a red warning panel + explicit `default=False` confirm. The saved `rules` list is preserved when allow-all is enabled so `snowclaw network restrict` restores the prior allowlist in one command. While allow-all is active, `network add`/`remove` still persist changes to the saved list and print a yellow note that the change won't take effect until `restrict` is run. Setup also offers an optional `"Skip the allowlist and permit all outbound traffic instead?"` prompt (defaulting to No) after the allowlist approval step.
+
 ### Integration points
 
-- **`cmd_setup()`**: Detects rules, prompts for approval, applies alongside other Snowflake objects.
-- **`cmd_deploy()`**: Diffs saved vs. detected before building; prompts if changes found.
-- **`assemble_build_context()`**: Generates `spcs/network-rules.sql` for reference.
-- **`cmd_network()`**: Manual management — `list`, `add`, `remove`, `detect`, `apply`.
+- **`cmd_setup()`**: Detects rules, prompts for approval, optionally offers allow-all opt-in, applies alongside other Snowflake objects.
+- **`cmd_deploy()`**: In allowlist mode, diffs saved vs. detected before building; in allow-all mode, skips detection and just ensures the allow-all NR is applied.
+- **`assemble_build_context()`**: Generates `spcs/network-rules.sql` for reference, honoring the current mode.
+- **`cmd_network()`**: Manual management — `list`, `add`, `remove`, `detect`, `apply`, `allow-all`, `restrict`.
 
 ## Build Hooks
 
