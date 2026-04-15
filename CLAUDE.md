@@ -357,8 +357,8 @@ SPCS blocks all outbound traffic by default. SnowClaw manages network rules and 
 1. **Auto-detection** (`detect_required_rules()`): Parses `openclaw.json` for provider/channel/tool hostnames. Always includes `*.snowflakecomputing.com:443` for Cortex.
 2. **Persistence**: Rules saved to `.snowclaw/network-rules.json` (committed to git).
 3. **Diff engine** (`diff_rules()`): Compares saved vs. detected rules. Returns `(added, removed)`.
-4. **SQL generation**: `CREATE OR REPLACE NETWORK RULE` + `CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION`.
-5. **Application**: Executes via Snowflake REST API. Changes take effect without redeploying the service.
+4. **SQL generation**: Steady-state updates use `ALTER NETWORK RULE … SET VALUE_LIST = (…)`; the NR and EAI are only `CREATE`d when missing (existence checked via `SHOW NETWORK RULES` / `SHOW EXTERNAL ACCESS INTEGRATIONS`). The reference `network-rules.sql` file emitted into the build context still uses `CREATE OR REPLACE` for one-shot apply to fresh schemas.
+5. **Application**: Executes via Snowflake REST API. Changes take effect without redeploying the SPCS service — the NR object identity is preserved by `ALTER`, so the EAI binding stays valid.
 
 ### Integration points
 

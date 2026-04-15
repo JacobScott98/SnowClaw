@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -367,7 +366,13 @@ def print_diff(added: list[NetworkRule], removed: list[NetworkRule]):
 
 
 def build_network_rule_sql(names: dict, rules: list[NetworkRule]) -> list[str]:
-    """Build SQL statements to create/replace network rule and external access integration."""
+    """Build standalone SQL statements for the reference ``network-rules.sql`` file.
+
+    Uses CREATE OR REPLACE so the file can be applied to a fresh schema in one
+    shot. The runtime apply path (``apply_network_rules``) prefers ALTER for
+    steady-state updates so the NR object identity is preserved and the EAI
+    binding stays valid without an SPCS service restart.
+    """
     if not rules:
         return []
 
@@ -392,32 +397,79 @@ def build_network_rule_sql(names: dict, rules: list[NetworkRule]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _network_rule_exists(account: str, pat: str, schema_fqn: str, name: str) -> bool:
+    """Return True if a network rule with ``name`` exists in ``schema_fqn`` (db.schema)."""
+    sql = f"SHOW NETWORK RULES LIKE '{name}' IN SCHEMA {schema_fqn}"
+    result = snowflake_rest_execute(account, pat, sql)
+    return bool(result.get("data"))
+
+
+def _external_access_integration_exists(account: str, pat: str, name: str) -> bool:
+    """Return True if an external access integration with ``name`` exists."""
+    sql = f"SHOW EXTERNAL ACCESS INTEGRATIONS LIKE '{name}'"
+    result = snowflake_rest_execute(account, pat, sql)
+    return bool(result.get("data"))
+
+
 def apply_network_rules(
     account: str, pat: str, names: dict, rules: list[NetworkRule]
 ) -> bool:
     """Apply network rules to Snowflake via REST API.
 
+    Steady-state updates use ``ALTER NETWORK RULE ... SET VALUE_LIST`` so the
+    NR object identity is preserved — the EAI binding stays valid and the SPCS
+    service picks up the new host list without a restart. The NR and EAI are
+    only issued as ``CREATE`` when they don't already exist.
+
     Returns True if successful, False otherwise.
     """
-    stmts = build_network_rule_sql(names, rules)
-    if not stmts:
+    if not rules:
         console.print("  [dim]No network rules to apply.[/dim]")
         return True
 
-    _LABEL_RE = re.compile(
-        r"(?:CREATE|REPLACE)\s+(?:OR\s+REPLACE\s+)?(\w[\w\s]+?)\s+\S+\.\S+",
-        re.IGNORECASE,
-    )
+    s = names["schema"]
+    egress = names["egress_rule"]
+    eai = names["external_access"]
+    value_list = ", ".join(f"'{r.host_port}'" for r in rules)
+
+    try:
+        nr_exists = _network_rule_exists(account, pat, s, egress)
+        eai_exists = _external_access_integration_exists(account, pat, eai)
+    except requests.HTTPError as e:
+        console.print("  [red]✗[/red] Failed to query existing network objects")
+        console.print(f"    [dim]{e}[/dim]")
+        return False
+
+    statements: list[tuple[str, str]] = []  # (label, sql)
+    if nr_exists:
+        statements.append((
+            f"ALTER NETWORK RULE {s}.{egress}",
+            f"ALTER NETWORK RULE {s}.{egress} SET VALUE_LIST = ({value_list})",
+        ))
+    else:
+        statements.append((
+            f"CREATE NETWORK RULE {s}.{egress}",
+            (
+                f"CREATE NETWORK RULE {s}.{egress} "
+                f"MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = ({value_list})"
+            ),
+        ))
+    if not eai_exists:
+        statements.append((
+            f"CREATE EXTERNAL ACCESS INTEGRATION {eai}",
+            (
+                f"CREATE EXTERNAL ACCESS INTEGRATION {eai} "
+                f"ALLOWED_NETWORK_RULES = ({s}.{egress}) ENABLED = TRUE"
+            ),
+        ))
 
     with console.status("[bold cyan]Applying network rules..."):
-        for stmt in stmts:
+        for label, stmt in statements:
             try:
                 snowflake_rest_execute(account, pat, stmt)
-                m = _LABEL_RE.search(stmt)
-                label = m.group(0).split("REPLACE ")[-1] if m else stmt[:60]
                 console.print(f"  [green]✓[/green] {label}")
             except requests.HTTPError as e:
-                console.print(f"  [red]✗[/red] Failed: {stmt[:80]}...")
+                console.print(f"  [red]✗[/red] Failed: {label}")
                 console.print(f"    [dim]{e}[/dim]")
                 return False
     return True
