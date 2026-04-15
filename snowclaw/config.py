@@ -301,13 +301,6 @@ def write_openclaw_config(root: Path, settings: dict):
         "channels": {},
         "agents": {"defaults": {
             "model": f"{provider_for_model(default_model_id)}/{default_model_id}",
-            "params": {
-                # Forward-compatible: OpenClaw injects ephemeral cache_control on system + trailing
-                # user blocks. The "long" knob upgrades to 1h TTL only against api.anthropic.com /
-                # Vertex hosts (OpenClaw gates this on hostname); against our proxy it still emits
-                # 5m ephemeral, which is the v1 target. 1h upgrade is a future proxy enhancement.
-                "cacheRetention": "long",
-            },
         }},
     }
 
