@@ -84,6 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     net_sub.add_parser("apply", help="Apply current rules to Snowflake")
     net_sub.add_parser("detect", help="Auto-detect required rules from project config")
+    net_sub.add_parser(
+        "allow-all",
+        help="Permit all outbound traffic (0.0.0.0:443, 0.0.0.0:80) — NOT RECOMMENDED",
+    )
+    net_sub.add_parser(
+        "restrict",
+        help="Disable allow-all mode and re-apply the saved allowlist",
+    )
 
     # --- snowclaw channel ---
     ch_parser = sub.add_parser(
