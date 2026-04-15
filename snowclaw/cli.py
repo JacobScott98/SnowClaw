@@ -10,7 +10,9 @@ from snowclaw.commands import (
     cmd_channel,
     cmd_deploy,
     cmd_dev,
+    cmd_download,
     cmd_logs,
+    cmd_ls,
     cmd_model,
     cmd_network,
     cmd_plugins,
@@ -24,6 +26,7 @@ from snowclaw.commands import (
     cmd_suspend,
     cmd_update,
     cmd_upgrade,
+    cmd_upload,
 )
 
 
@@ -54,18 +57,41 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("--container", default="openclaw", help="Container name (default: openclaw)")
     logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
 
-    pull_parser = sub.add_parser("pull", help="Pull skills, workspace, and config from SPCS stage")
+    pull_parser = sub.add_parser(
+        "pull",
+        help="Pull skills and config from SPCS stage (workspace files: use `snowclaw download`)",
+    )
     pull_group = pull_parser.add_mutually_exclusive_group()
-    pull_group.add_argument("--workspace-only", action="store_true", help="Only pull workspace/")
     pull_group.add_argument("--skills-only", action="store_true", help="Only pull skills/")
     pull_group.add_argument("--config-only", action="store_true", help="Only pull openclaw.json")
 
-    push_parser = sub.add_parser("push", help="Push skills, workspace, and config to SPCS stage")
+    push_parser = sub.add_parser(
+        "push",
+        help="Push skills and config to SPCS stage (workspace files: use `snowclaw upload`)",
+    )
     push_group = push_parser.add_mutually_exclusive_group()
-    push_group.add_argument("--workspace-only", action="store_true", help="Only push workspace/")
     push_group.add_argument("--skills-only", action="store_true", help="Only push skills/")
     push_group.add_argument("--config-only", action="store_true", help="Only push openclaw.json")
     push_parser.add_argument("--secrets", action="store_true", help="Only update secrets and connections.toml (skip target push when used alone)")
+
+    # --- snowclaw ls / upload / download (workspace file transfer) ---
+    ls_parser = sub.add_parser(
+        "ls", help="List files in the SPCS workspace (paths are workspace-relative)"
+    )
+    ls_parser.add_argument("path", nargs="?", default="", help="Subpath under workspace/ to list (default: workspace root)")
+
+    upload_parser = sub.add_parser(
+        "upload", help="Upload a local file into the SPCS workspace (live — agent sees it immediately)"
+    )
+    upload_parser.add_argument("local_path", help="Path to a local file to upload")
+    upload_parser.add_argument("--dest", default="", help="Destination subdirectory under workspace/ (default: workspace root). Filename is preserved.")
+    upload_parser.add_argument("--force", action="store_true", help="Overwrite without confirmation if destination already exists")
+
+    download_parser = sub.add_parser(
+        "download", help="Download a file from the SPCS workspace to the local machine"
+    )
+    download_parser.add_argument("stage_path", help="Workspace-relative path to download (e.g. report.csv or data/report.csv)")
+    download_parser.add_argument("--dest", default=".", help="Local destination directory (default: cwd). Filename is preserved.")
 
     # --- snowclaw network ---
     net_parser = sub.add_parser(
@@ -153,6 +179,9 @@ def main():
         "update": cmd_update,
         "pull": cmd_pull,
         "push": cmd_push,
+        "ls": cmd_ls,
+        "upload": cmd_upload,
+        "download": cmd_download,
         "network": cmd_network,
         "channel": cmd_channel,
         "plugins": cmd_plugins,
