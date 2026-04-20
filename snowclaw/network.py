@@ -205,6 +205,9 @@ def get_env_secrets(prefix: str, env_path: Path) -> list[dict]:
         "SNOWCLAW_DB",
         "SNOWCLAW_SCHEMA",
         "SNOWCLAW_MASK_VARS",
+        "SNOWFLAKE_ACCOUNT",  # connection metadata, not a secret
+        "SNOWFLAKE_USER",     # connection metadata, not a secret
+        "SNOWFLAKE_RUNTIME_TOKEN",  # held as sf_token Snowflake secret, not its own
         "CORTEX_BASE_URL",
         "IMAGE_TAG",
         "PROXY_LOG_RESPONSES",
@@ -480,17 +483,21 @@ def build_network_rule_sql(
 # ---------------------------------------------------------------------------
 
 
-def _network_rule_exists(account: str, pat: str, schema_fqn: str, name: str) -> bool:
+def _network_rule_exists(
+    account: str, pat: str, schema_fqn: str, name: str, role: str | None = None
+) -> bool:
     """Return True if a network rule with ``name`` exists in ``schema_fqn`` (db.schema)."""
     sql = f"SHOW NETWORK RULES LIKE '{name}' IN SCHEMA {schema_fqn}"
-    result = snowflake_rest_execute(account, pat, sql)
+    result = snowflake_rest_execute(account, pat, sql, role=role)
     return bool(result.get("data"))
 
 
-def _external_access_integration_exists(account: str, pat: str, name: str) -> bool:
+def _external_access_integration_exists(
+    account: str, pat: str, name: str, role: str | None = None
+) -> bool:
     """Return True if an external access integration with ``name`` exists."""
     sql = f"SHOW EXTERNAL ACCESS INTEGRATIONS LIKE '{name}'"
-    result = snowflake_rest_execute(account, pat, sql)
+    result = snowflake_rest_execute(account, pat, sql, role=role)
     return bool(result.get("data"))
 
 
@@ -500,6 +507,7 @@ def apply_network_rules(
     names: dict,
     rules: list[NetworkRule],
     allow_all: bool = False,
+    admin_role: str | None = None,
 ) -> bool:
     """Apply network rules to Snowflake via REST API.
 
@@ -526,8 +534,8 @@ def apply_network_rules(
     eai = names["external_access"]
 
     try:
-        nr_exists = _network_rule_exists(account, pat, s, egress)
-        eai_exists = _external_access_integration_exists(account, pat, eai)
+        nr_exists = _network_rule_exists(account, pat, s, egress, role=admin_role)
+        eai_exists = _external_access_integration_exists(account, pat, eai, role=admin_role)
     except requests.HTTPError as e:
         console.print("  [red]✗[/red] Failed to query existing network objects")
         console.print(f"    [dim]{e}[/dim]")
@@ -559,7 +567,7 @@ def apply_network_rules(
     with console.status("[bold cyan]Applying network rules..."):
         for label, stmt in statements:
             try:
-                snowflake_rest_execute(account, pat, stmt)
+                snowflake_rest_execute(account, pat, stmt, role=admin_role)
                 console.print(f"  [green]✓[/green] {label}")
             except requests.HTTPError as e:
                 console.print(f"  [red]✗[/red] Failed: {label}")
@@ -579,6 +587,7 @@ def prompt_and_apply_rules(
     pat: str,
     names: dict,
     detected: list[NetworkRule] | None = None,
+    admin_role: str | None = None,
 ) -> list[NetworkRule]:
     """Detect required rules, show diff, prompt for approval, and apply.
 
@@ -594,7 +603,7 @@ def prompt_and_apply_rules(
             "[bold red]Egress mode: ALLOW ALL[/bold red] "
             "[dim](unrestricted — 0.0.0.0:443, 0.0.0.0:80)[/dim]"
         )
-        apply_network_rules(account, pat, names, current, allow_all=True)
+        apply_network_rules(account, pat, names, current, allow_all=True, admin_role=admin_role)
         return current
 
     if detected is None:
@@ -626,7 +635,7 @@ def prompt_and_apply_rules(
             return []
 
         save_network_rules(root, detected)
-        apply_network_rules(account, pat, names, detected)
+        apply_network_rules(account, pat, names, detected, admin_role=admin_role)
         return detected
 
     # Existing rules — check for changes
@@ -659,7 +668,7 @@ def prompt_and_apply_rules(
             merged.append(r)
 
     save_network_rules(root, merged)
-    apply_network_rules(account, pat, names, merged)
+    apply_network_rules(account, pat, names, merged, admin_role=admin_role)
     return merged
 
 
@@ -694,9 +703,11 @@ def offer_apply_rules(root: Path):
             console.print("[red]Missing Snowflake credentials in .env.[/red]")
             return
         cfg = load_network_config(root)
+        admin_role = ctx["marker"].get("admin_role") or ctx["conn"].get("role")
         success = apply_network_rules(
             ctx["account"], ctx["token"], ctx["names"], cfg.rules,
             allow_all=cfg.allow_all_egress,
+            admin_role=admin_role,
         )
         if success:
             console.print("[green]Network rules applied to Snowflake.[/green]")

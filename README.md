@@ -17,6 +17,112 @@ curl -fsSL https://raw.githubusercontent.com/JacobScott98/SnowClaw/main/install.
 
 This clones the repo to `~/.snowclaw` (override with `SNOWCLAW_DIR`), installs `pipx` if needed, and registers the `snowclaw` CLI. Re-running the script updates to the latest version.
 
+## Required Snowflake privileges
+
+SnowClaw separates provisioning (done by **you**, with an admin role) from the running service (a low-privilege **runtime role** that you create beforehand). This section covers what each role needs.
+
+> `ACCOUNTADMIN` has everything below and works out of the box. If that's acceptable for your account, skip ahead. The rest of this section is for tighter setups using a dedicated role.
+
+### Step 1 — Create the runtime role
+
+The SPCS service runs under this role. Create it once, per Snowflake account:
+
+```sql
+USE ROLE USERADMIN;
+CREATE ROLE IF NOT EXISTS SNOWCLAW_RUNTIME_ROLE;
+```
+
+SnowClaw applies minimal USAGE/READ grants to this role at setup time — you don't need to pre-grant anything else.
+
+### Step 2 — Create the admin role
+
+Run this once, as `ACCOUNTADMIN` (or any role with `MANAGE GRANTS`), substituting `<your_user>`:
+
+```sql
+-- Create the SnowClaw admin role itself.
+USE ROLE USERADMIN;
+CREATE ROLE IF NOT EXISTS SNOWCLAW_ADMIN_ROLE;
+GRANT ROLE SNOWCLAW_ADMIN_ROLE TO USER <your_user>;
+
+-- Let admin impersonate runtime (needed for the transient CREATE SERVICE step).
+GRANT ROLE SNOWCLAW_RUNTIME_ROLE TO ROLE SNOWCLAW_ADMIN_ROLE;
+
+-- Account-level privileges the admin role needs for provisioning.
+USE ROLE ACCOUNTADMIN;
+GRANT CREATE DATABASE         ON ACCOUNT TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE COMPUTE POOL     ON ACCOUNT TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE INTEGRATION      ON ACCOUNT TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT BIND SERVICE ENDPOINT   ON ACCOUNT TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT MANAGE GRANTS           ON ACCOUNT TO ROLE SNOWCLAW_ADMIN_ROLE;
+
+-- Mint a role-restricted PAT for the admin role.
+ALTER USER <your_user> ADD PROGRAMMATIC ACCESS TOKEN snowclaw_admin_pat
+  ROLE_RESTRICTION = 'SNOWCLAW_ADMIN_ROLE'
+  DAYS_TO_EXPIRY = 90;
+-- Copy the returned token value into `snowclaw setup` when prompted for your PAT.
+```
+
+When `snowclaw setup` asks for the admin role, enter `SNOWCLAW_ADMIN_ROLE`. When it asks for the runtime role, enter `SNOWCLAW_RUNTIME_ROLE`.
+
+### The second token: a runtime-scoped PAT
+
+After setup validates the runtime role, it prints an `ALTER USER ... ADD PROGRAMMATIC ACCESS TOKEN` command and prompts you to paste the resulting token. This second PAT is what lives inside the SPCS containers — it's what Cortex Code, snowsql, and the Cortex proxy use at runtime. Because it's `ROLE_RESTRICTION`-scoped to the runtime role, leaking it from inside the container only grants runtime-role privileges (no ability to alter network rules, mint secrets, or create sibling services).
+
+The command setup prints looks like:
+
+```sql
+ALTER USER <your_user> ADD PROGRAMMATIC ACCESS TOKEN snowclaw_runtime_pat
+  ROLE_RESTRICTION = 'SNOWCLAW_RUNTIME_ROLE'
+  DAYS_TO_EXPIRY = 90;
+```
+
+Run it in Snowsight (or the SQL IDE of your choice) and paste the returned token into the setup prompt. SnowClaw stores it as the `{prefix}_sf_token` Snowflake secret and binds it into both containers at deploy time.
+
+Two tokens total: the admin PAT you use on your machine (high privilege, held by the CLI and you only), and the runtime-scoped PAT inside the SPCS service (minimal privilege).
+
+### What each admin privilege is for
+
+| Privilege | Needed because |
+|---|---|
+| `CREATE DATABASE ON ACCOUNT` | `snowclaw setup` creates `{prefix}_db` (skip if you're providing an existing DB — then you need `USAGE` on it + `CREATE SCHEMA` on it instead). |
+| `CREATE COMPUTE POOL ON ACCOUNT` | The SPCS service runs on its own pool (`{prefix}_pool`) to isolate billing and keep it suspendable. |
+| `CREATE INTEGRATION ON ACCOUNT` | External access integrations (EAIs) are account-level objects. SnowClaw creates one (`{prefix}_external_access`) that wraps the approved network rules. |
+| `BIND SERVICE ENDPOINT ON ACCOUNT` | SPCS requires this to expose the public OpenClaw endpoint on port 18789. Without it, `CREATE SERVICE` succeeds but the endpoint is unreachable. |
+| `MANAGE GRANTS ON ACCOUNT` | Lets the admin role grant privileges onward to the runtime role (including `BIND SERVICE ENDPOINT` and `DATABASE ROLE SNOWFLAKE.CORTEX_USER`) and handle the transient `CREATE SERVICE` grant during deploy. |
+
+### Using a pre-existing database/schema
+
+If you already have a database and schema you want SnowClaw to live in, skip `CREATE DATABASE ON ACCOUNT` and grant these on the existing objects instead:
+
+```sql
+USE ROLE ACCOUNTADMIN;
+GRANT USAGE                    ON DATABASE <your_db> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT USAGE                    ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE STAGE             ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE IMAGE REPOSITORY  ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE SECRET            ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE NETWORK RULE      ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+GRANT CREATE SERVICE           ON SCHEMA   <your_db>.<your_schema> TO ROLE SNOWCLAW_ADMIN_ROLE;
+```
+
+### Why `SYSADMIN` alone isn't enough
+
+`SYSADMIN` holds `CREATE DATABASE` by default but not `CREATE INTEGRATION`, `CREATE COMPUTE POOL`, or `BIND SERVICE ENDPOINT` — those require `ACCOUNTADMIN` or an explicit grant. If you enter `SYSADMIN` at the admin-role prompt without first granting the privileges above, `snowclaw setup` will fail when it tries to create the compute pool or the EAI.
+
+### Runtime role privileges (managed by SnowClaw — for reference)
+
+You don't need to configure these yourself — `snowclaw setup` and `snowclaw deploy` apply them for you. They're listed here so you can audit what the runtime PAT actually carries inside the container:
+
+- `USAGE` on database, schema, compute pool, EAI
+- `READ`+`WRITE` on the state stage (for workspace file I/O)
+- `READ` on the image repository (to pull container images)
+- `MONITOR` on the compute pool (for `snowclaw status`)
+- `READ` on each channel/tool/custom secret (what SPCS's `CREATE SERVICE` actually checks when resolving `snowflakeSecret:` bindings — `USAGE` is the wrong privilege here despite looking right by name)
+- `BIND SERVICE ENDPOINT ON ACCOUNT` (required because the service exposes a public endpoint on port 18789 — without this `CREATE SERVICE` fails with "Please grant BIND SERVICE ENDPOINT to service owner role")
+- `OWNERSHIP` of the SPCS service itself (acquired by `CREATE SERVICE`, which runs under the runtime role with a transient `CREATE SERVICE` grant that's revoked immediately after)
+
+Explicitly **not** granted to the runtime role: any privilege on the network rule, `CREATE NETWORK RULE`, `CREATE SECRET`, `CREATE INTEGRATION`, permanent `CREATE SERVICE`, `CREATE COMPUTE POOL`, `USAGE` on other pools or warehouses, or `OWNERSHIP` of anything other than its own service. A compromised runtime PAT inside the container cannot alter network rules, mint new secrets, or spin up sibling services.
+
 ## Quick Start
 
 ```bash
@@ -39,7 +145,7 @@ SnowClaw is designed to be safe to run in your Snowflake account by default.
 - **Network egress control** — All outbound traffic is deny-by-default. Only explicitly approved hosts (managed via `snowclaw network`) get Snowflake network rules and external access integrations. The container cannot reach the internet unless you allow it.
 - **SPCS ingress control** — Snowflake handles TLS termination and authentication on the single public endpoint. There are no open ports or exposed services beyond what SPCS declares — the ingress surface is managed entirely by Snowflake's infrastructure.
 - **File permissions** — `openclaw.json` and credential files are root-owned and read-only at runtime. The agent cannot modify config.
-- **Role separation** — The CLI uses your admin role for infrastructure operations. The deployed container runs under a dedicated service role with minimal privileges.
+- **Role separation** — The CLI uses your admin role for provisioning; the SPCS service runs under a dedicated low-privilege runtime role (which you create beforehand and pass to `snowclaw setup`). The runtime PAT inside the container is `ROLE_RESTRICTION`-scoped to this role, so a compromised agent cannot alter network rules, mint new secrets, or create sibling services. See [Required Snowflake privileges](#required-snowflake-privileges) for the exact privilege split.
 - **Secret masking** — The Cortex proxy scans all outbound LLM messages and replaces known secret values with `[REDACTED:VAR_NAME]`. Credentials never reach the model.
 - **User-managed secrets** — `CUSTOM_`-prefixed env vars in `.env` become individual Snowflake secrets, mounted at runtime — never baked into the image.
 
@@ -93,7 +199,7 @@ SnowClaw manages secrets entirely through your local `.env` file. Secrets are **
 
 | Source | Example | How it's handled |
 |--------|---------|-----------------|
-| Snowflake auth | `SNOWFLAKE_TOKEN` | Created as a dedicated secret during deploy |
+| Snowflake auth | `SNOWFLAKE_TOKEN` | Held as the `{prefix}_sf_token` Snowflake secret — a user-provided PAT `ROLE_RESTRICTION`-scoped to the runtime role. Bound into both containers. The openclaw container renders `/home/node/.snowflake/connections.toml` from it at startup so Cortex Code / snowsql / the Python connector find it. The proxy uses it for Cortex REST. Because the PAT is role-restricted, leaking it only grants runtime-role access — no network rule changes, no secret creation, no sibling services. |
 | Channel credentials | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN` | Added via `snowclaw channel add`, auto-detected per channel |
 | Tool credentials | `GH_TOKEN`, `BRAVE_API_KEY` | Added via setup wizard when tools are selected |
 | Custom variables | Any other `KEY=value` in `.env` | Automatically becomes a Snowflake secret — no config needed |

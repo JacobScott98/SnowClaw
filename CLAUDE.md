@@ -252,11 +252,40 @@ The entrypoint runs as root and sets file permissions before dropping to `node`:
 
 Generated `openclaw.json` includes `tools.fs.workspaceOnly: true` — restricts agent file tools to workspace directory only. Two independent layers: OS permissions + tool policy.
 
-### Admin/service role separation
+### Admin / runtime role separation
 
-- **Admin role** (default: SYSADMIN) — used by CLI for infrastructure management (create database, secrets, compute pool, etc.)
-- **Service role** (default: SNOWCLAW_SERVICE_ROLE) — used by the container at runtime with minimal privileges
-- Setup wizard collects both roles; service role must already exist in Snowflake
+Two Snowflake roles; one owns infra, one owns the running service.
+
+- **Admin role** (default: `SYSADMIN`) — used by the CLI for provisioning. Owns the database, schema, image repo, stage, compute pool, network rule, EAI, and every secret. The admin PAT should be `ROLE_RESTRICTION`-scoped to this role; setup prints the `ALTER USER … ADD PROGRAMMATIC ACCESS TOKEN … ROLE_RESTRICTION = '<admin>'` command and best-effort warns via `SELECT CURRENT_AVAILABLE_ROLES()` if the PAT can assume more than the admin role.
+- **Runtime role** (e.g. `SNOWCLAW_RUNTIME_ROLE`) — owns only the SPCS `SERVICE` object. **The user creates this role themselves** before running `snowclaw setup` (one-time, per account) and grants it to the admin role so admin can impersonate for the transient `CREATE SERVICE` step. SnowClaw does *not* auto-provision the runtime role — the privilege required to do so (`CREATE ROLE ON ACCOUNT`) isn't one you can assume an admin user will hand out, and baking it into SnowClaw's admin-role privilege list would be noise for the common case. Setup verifies the role exists and bails with a copy-pasteable `CREATE ROLE` / `GRANT ROLE` snippet if it doesn't. Once the role exists, SnowClaw applies a minimal set of grants to it: `USAGE` on database/schema/EAI/compute pool, `READ`+`WRITE` on the stage, `READ` on the image repository, `MONITOR` on the pool, `READ` on each channel/tool/custom secret, `BIND SERVICE ENDPOINT ON ACCOUNT`, and `DATABASE ROLE SNOWFLAKE.CORTEX_USER`. Two Snowflake footguns worth noting: (1) secret bindings use `READ`, not `USAGE` — SPCS's `CREATE SERVICE` resolves `snowflakeSecret:` against `READ`. `USAGE` looks right by name (it's what UDFs/stored procs use) but SPCS rejects specs whose creator only holds `USAGE`. (2) `BIND SERVICE ENDPOINT` is account-level, so the admin role needs `MANAGE GRANTS` (or the privilege `WITH GRANT OPTION`) to grant it onward. Explicitly **not** granted to the runtime role: any grant on the network rule (reaches the network through the EAI, no direct NR privilege needed), `CREATE NETWORK RULE`, `CREATE SECRET`, `CREATE INTEGRATION`, `CREATE COMPUTE POOL`, permanent `CREATE SERVICE`, `OWNERSHIP` on anything other than the service, or `USAGE` on other pools/warehouses.
+
+Snowflake blocks `GRANT OWNERSHIP ON SERVICE`, so `cmd_deploy` arranges for the runtime role to *create* the service in the first place (which makes it the owner): admin issues a transient `GRANT CREATE SERVICE ON SCHEMA … TO ROLE <runtime>`, then calls `CREATE SERVICE` with `role=<runtime>` via the REST API (admin holds the runtime role via the user-applied `GRANT ROLE <runtime> TO ROLE <admin>`), then revokes the `CREATE SERVICE` privilege in a `finally` block. Net result: runtime role owns the service, cannot create another one, and admin can still `USE ROLE <runtime>` for break-glass.
+
+### Runtime Snowflake auth (container → Snowflake)
+
+Cortex's REST API only accepts programmatic access tokens (and key-pair JWTs). Cortex Code has the same requirement — SnowClaw tried the SPCS-mounted OAuth session token at `/snowflake/session/token` and hit rejection from both the REST path and Cortex Code. The runtime therefore ships a **single PAT, role-restricted to the runtime role**, bound into both containers:
+
+- **`{prefix}_sf_token` Snowflake secret** — value is a user-provided PAT with `ROLE_RESTRICTION = '<runtime_role>'`. The setup wizard prints the exact `ALTER USER ... ADD PROGRAMMATIC ACCESS TOKEN ... ROLE_RESTRICTION = '<runtime>'` command and prompts for the returned token. Nothing long-lived is written to disk outside the Snowflake secret store.
+- **openclaw container** — binds `{prefix}_sf_token` → `SNOWFLAKE_TOKEN`. The entrypoint materializes `/home/node/.snowflake/connections.toml` from `$SNOWFLAKE_TOKEN` at startup (`authenticator = "PROGRAMMATIC_ACCESS_TOKEN"`, `role = "<runtime>"`). Cortex Code / snowsql / the Python connector read that file. OpenClaw's `${SNOWFLAKE_TOKEN}` substitution in `openclaw.json` resolves to the same PAT.
+- **cortex-proxy sidecar** — also binds `{prefix}_sf_token` → `SNOWFLAKE_TOKEN`. The proxy forwards it upstream as `Authorization: Bearer <pat>` with `X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN`.
+- **standalone proxy** — no `sf_token` binding; each caller supplies their own PAT via the `X-Cortex-Token` header.
+
+Because the PAT is role-restricted, an agent-side compromise that leaks `SNOWFLAKE_TOKEN` only grants runtime-role access — no network rule alteration, no secret creation, no sibling services. The admin PAT is never visible inside either container; it's held by the user/CLI only.
+
+`SNOWCLAW_MASK_VARS` always includes `SNOWFLAKE_TOKEN` so that if a compromised agent somehow smuggled the runtime PAT into an LLM request body, the proxy masker would redact it before it left the sidecar.
+
+### Migration from pre-role-separation deployments
+
+The `.snowclaw/config.json` marker carries `security_version`. On `snowclaw deploy`, if the marker reports `security_version < 2` the CLI runs an inline migration (with a yellow confirmation panel and a runtime-role prompt — the role must already exist and be granted to the admin role; setup prints a copy-pasteable `CREATE ROLE` / `GRANT ROLE` snippet if it doesn't):
+
+1. Verify the runtime role exists and bail with instructions if not.
+2. Apply the minimal runtime-role grants (idempotent), including `DATABASE ROLE SNOWFLAKE.CORTEX_USER` so Cortex works under the new role.
+3. Print the `ALTER USER ... ADD PROGRAMMATIC ACCESS TOKEN ... ROLE_RESTRICTION = '<runtime>'` command and prompt for the new runtime-scoped PAT.
+4. `CREATE OR REPLACE SECRET {prefix}_sf_token` — rotate the existing secret value from the admin PAT to the runtime-scoped PAT (the secret object itself is reused).
+5. `DROP SERVICE IF EXISTS` — Snowflake blocks `GRANT OWNERSHIP` on SPCS services, so we can't hand the existing service to the runtime role. The stage-mounted volume (`skills/`, `workspace/`, `openclaw.json`) survives the drop; only the service object and its public endpoint URL change.
+6. The remainder of `cmd_deploy` runs the CREATE-as-runtime flow so the fresh service is owned by the runtime role, with the rotated `sf_token` bound into both containers.
+
+Expect ~1 minute of service downtime and a new endpoint URL — the migration prints the new URL at the end of deploy. Users should revoke the previous admin PAT from outside the deployment once the new service is healthy (SnowClaw does not do this automatically — the admin PAT may be in use by the CLI itself).
 
 ### Secret masking
 
@@ -269,7 +298,8 @@ All known secret values are scrubbed from LLM request bodies by the proxy sideca
 - Database & schema (e.g., `snowclaw_db.snowclaw_schema`)
 - Image repository: `snowclaw_repo`
 - Internal stage: `snowclaw_state_stage` (backs persistent volume)
-- Secrets: `snowclaw_sf_token`, plus dynamic channel/tool/custom secrets
+- Secrets: `{prefix}_sf_token` (runtime-scoped PAT, bound into both containers) plus dynamic channel/tool/custom secrets
+- Runtime role: user-provided (e.g. `SNOWCLAW_RUNTIME_ROLE`) — must exist before setup; SnowClaw applies minimal grants but does not create the role
 - Network rule: `snowclaw_egress_rule` (managed by `snowclaw network`)
 - External access integration: `snowclaw_external_access`
 - Compute pool: `snowclaw_pool` (CPU_X64_S, 1 node)
@@ -280,13 +310,13 @@ Two containers in one service:
 
 1. **openclaw** — Main gateway
    - 1-2 CPU, 2-4Gi RAM
-   - Secrets injected as env vars (Snowflake token, channel creds, tool creds, custom secrets)
+   - Secrets injected as env vars: `SNOWFLAKE_TOKEN` (from `{prefix}_sf_token`, the runtime-scoped PAT) plus channel/tool/custom secrets. The entrypoint renders `/home/node/.snowflake/connections.toml` at startup from `$SNOWFLAKE_TOKEN` so Cortex Code / snowsql / the Python connector pick it up.
    - Volume: `@snowclaw_state_stage` mounted at `/home/node/.openclaw`
 
 2. **cortex-proxy** — FastAPI sidecar
    - 0.5-1 CPU, 512Mi-1Gi RAM
    - Env vars: `CORTEX_BASE_URL`, `SNOWCLAW_MASK_VARS`
-   - Same secrets as openclaw (for masking)
+   - Same channel/tool secrets as openclaw (for masking) plus `SNOWFLAKE_TOKEN` bound from `{prefix}_sf_token` (the runtime-scoped PAT). The proxy forwards it upstream as `Authorization: Bearer` with `X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN`.
 
 Public endpoint on port 18789.
 

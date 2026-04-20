@@ -215,6 +215,10 @@ def write_dotenv(root: Path, settings: dict):
         f"SNOWFLAKE_ACCOUNT={settings['account']}",
         f"SNOWFLAKE_USER={settings['sf_user']}",
         f"SNOWFLAKE_TOKEN={settings['pat']}",
+        # Runtime-scoped PAT — this is what gets uploaded as the sf_token
+        # Snowflake secret and bound into both SPCS containers at deploy time.
+        # SNOWFLAKE_TOKEN above is the admin PAT, used by the CLI itself.
+        f"SNOWFLAKE_RUNTIME_TOKEN={settings.get('runtime_pat', '')}",
     ]
     # Write env vars for all enabled channels
     for ch_key in settings.get("channels", []):
@@ -241,8 +245,8 @@ def write_dotenv(root: Path, settings: dict):
 
     # Collect keys managed by setup so we can preserve user-added extras
     managed_keys = {"SNOWCLAW_DB", "SNOWCLAW_SCHEMA", "SNOWFLAKE_ACCOUNT",
-                    "SNOWFLAKE_USER", "SNOWFLAKE_TOKEN", "CORTEX_BASE_URL",
-                    "SNOWCLAW_MASK_VARS"}
+                    "SNOWFLAKE_USER", "SNOWFLAKE_TOKEN", "SNOWFLAKE_RUNTIME_TOKEN",
+                    "CORTEX_BASE_URL", "SNOWCLAW_MASK_VARS"}
     for ch_key in settings.get("channels", []):
         entry = CHANNEL_REGISTRY.get(ch_key)
         if entry:
@@ -388,7 +392,7 @@ def write_openclaw_config(root: Path, settings: dict):
 
 
 def write_connections_toml(root: Path, settings: dict):
-    """Write connections.toml for Snowflake connectivity."""
+    """Write the local-CLI connections.toml (PAT-based, admin role)."""
     content = f"""default_connection_name = "main"
 
 [main]

@@ -10,12 +10,27 @@ mkdir -p "$OPENCLAW_HOME"
 # openclaw.json lives on the stage-backed volume — managed by deploy/push,
 # not baked into the image. No copy needed here.
 
-# connections.toml also lives on the stage volume — symlink it into
-# the Snowflake SDK's expected location if present.
-if [ -f "$OPENCLAW_HOME/connections.toml" ]; then
+# Render ~/.snowflake/connections.toml at startup from env vars. Cortex Code,
+# snowsql, and the Snowflake Python connector all read this path.
+# SNOWFLAKE_TOKEN is the runtime-scoped PAT, injected by the SPCS secret
+# binding; the other fields come from service.yaml's env block.
+if [ -n "$SNOWFLAKE_TOKEN" ]; then
     mkdir -p /home/node/.snowflake
-    ln -sf "$OPENCLAW_HOME/connections.toml" /home/node/.snowflake/connections.toml
+    cat > /home/node/.snowflake/connections.toml <<EOF
+default_connection_name = "main"
+
+[main]
+account = "$SNOWFLAKE_ACCOUNT"
+user = "$SNOWFLAKE_USER"
+authenticator = "PROGRAMMATIC_ACCESS_TOKEN"
+token = "$SNOWFLAKE_TOKEN"
+warehouse = "$SNOWFLAKE_WAREHOUSE"
+database = "$SNOWFLAKE_DATABASE"
+schema = "$SNOWFLAKE_SCHEMA"
+role = "$SNOWFLAKE_ROLE"
+EOF
     chown -R node:node /home/node/.snowflake
+    chmod 400 /home/node/.snowflake/connections.toml
 fi
 
 # Skills: only seed on first run (when dir doesn't exist)

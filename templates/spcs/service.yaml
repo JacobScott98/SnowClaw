@@ -2,18 +2,14 @@ spec:
   containers:
     - name: openclaw
       image: /__SNOWCLAW_DB__/__SNOWCLAW_SCHEMA__/__SNOWCLAW_PREFIX___repo/snowclaw:latest
-      secrets:
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
-          secretKeyRef: secret_string
-          envVarName: SNOWFLAKE_TOKEN
-__CHANNEL_SECRETS__
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___gh_token
-          secretKeyRef: secret_string
-          envVarName: GH_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
-          secretKeyRef: secret_string
-          envVarName: BRAVE_API_KEY
-__ENV_SECRETS__
+      env:
+        SNOWFLAKE_ACCOUNT: __SNOWCLAW_ACCOUNT__
+        SNOWFLAKE_USER: __SNOWCLAW_USER__
+        SNOWFLAKE_WAREHOUSE: __SNOWCLAW_WAREHOUSE__
+        SNOWFLAKE_DATABASE: __SNOWCLAW_DB__
+        SNOWFLAKE_SCHEMA: __SNOWCLAW_SCHEMA__
+        SNOWFLAKE_ROLE: __SNOWCLAW_RUNTIME_ROLE__
+__OPENCLAW_SECRETS__
       resources:
         requests:
           cpu: 2.5
@@ -30,18 +26,7 @@ __ENV_SECRETS__
         CORTEX_BASE_URL: https://__SNOWCLAW_ACCOUNT__.snowflakecomputing.com/api/v2/cortex/v1
         SNOWCLAW_MASK_VARS: __SNOWCLAW_MASK_VARS__
         PROXY_LOG_RESPONSES: __PROXY_LOG_RESPONSES__
-      secrets:
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___sf_token
-          secretKeyRef: secret_string
-          envVarName: SNOWFLAKE_TOKEN
-__CHANNEL_SECRETS_PROXY__
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___gh_token
-          secretKeyRef: secret_string
-          envVarName: GH_TOKEN
-        - snowflakeSecret: __SNOWCLAW_DB__.__SNOWCLAW_SCHEMA__.__SNOWCLAW_PREFIX___brave_api_key
-          secretKeyRef: secret_string
-          envVarName: BRAVE_API_KEY
-__ENV_SECRETS_PROXY__
+__PROXY_SECRETS__
       resources:
         requests:
           cpu: 0.5
