@@ -44,7 +44,15 @@ from snowclaw.network import (
     save_network_rules,
 )
 from snowclaw.scaffold import assemble_build_context, assemble_proxy_build_context, scaffold_user_files
-from snowclaw.snowflake import run_proxy_snowflake_setup, run_snowflake_setup
+from snowclaw.snowflake import (
+    apply_runtime_grants,
+    build_create_service_grant,
+    build_revoke_create_service,
+    role_exists,
+    run_proxy_snowflake_setup,
+    run_snowflake_setup,
+    validate_pat_role_restriction,
+)
 from snowclaw.utils import (
     console,
     find_project_root,
@@ -106,11 +114,48 @@ def cmd_setup(args: argparse.Namespace):
         invalid_message="Username is required.",
     ).execute()
 
+    console.print()
+    console.print(
+        Panel(
+            "[bold]The admin role provisions SnowClaw — it does NOT run the service.[/bold]\n\n"
+            "The CLI uses this role [bold]on your machine[/bold] to create the database, schema,\n"
+            "image repo, stage, compute pool, network rule, EAI, and secrets.\n\n"
+            "The container runs under a separate [cyan]runtime role[/cyan] (a later prompt), which\n"
+            "you create yourself. This admin role never enters the container.\n\n"
+            "Needs: [cyan]CREATE DATABASE[/cyan], [cyan]CREATE COMPUTE POOL[/cyan], [cyan]CREATE INTEGRATION[/cyan],\n"
+            "[cyan]BIND SERVICE ENDPOINT[/cyan], [cyan]MANAGE GRANTS[/cyan] (all ON ACCOUNT).\n"
+            "`ACCOUNTADMIN` has all of these. A dedicated role works too.\n\n"
+            "[dim]Full recipe + rationale: https://snowclaw.io/docs/reference/snowflake-privileges[/dim]",
+            title="[bold cyan]Admin role[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+    role = inquirer.text(message="Snowflake admin role:", default="SYSADMIN").execute()
+    admin_role = role.strip().upper()
+
+    console.print(
+        f"\n[dim]The PAT you paste next must be able to assume [cyan]{admin_role}[/cyan].[/dim]"
+    )
     pat = inquirer.secret(
-        message="Programmatic access token (PAT):",
+        message=f"Programmatic access token (PAT) for {admin_role}:",
         validate=lambda v: len(v.strip()) > 0,
         invalid_message="PAT is required.",
     ).execute()
+    console.print(
+        Panel(
+            f"[bold]Your admin PAT should be restricted to[/bold] [cyan]{admin_role}[/cyan].\n"
+            "If it isn't, a compromise of the PAT grants whoever holds it every role\n"
+            "your user can assume — not just the one intended for SnowClaw.\n\n"
+            "Create a restricted PAT with:\n"
+            f"  [dim]ALTER USER {sf_user.strip()} ADD PROGRAMMATIC ACCESS TOKEN <name>[/dim]\n"
+            f"  [dim]  ROLE_RESTRICTION = '{admin_role}';[/dim]\n\n"
+            "[dim]Details: https://snowclaw.io/docs/reference/snowflake-privileges[/dim]",
+            title="[bold yellow]⚠  PAT role restriction[/bold yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
 
     channels = inquirer.checkbox(
         message="Communication channels to enable:",
@@ -178,11 +223,11 @@ def cmd_setup(args: argparse.Namespace):
     ).execute()
 
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
-    role = inquirer.text(message="Snowflake role:", default="SYSADMIN").execute()
+
     console.print(
         "\n[dim]SnowClaw service objects (image repo, stage, compute pool, secrets, etc.) "
         "will be created in this database and schema. You can use an existing database/schema "
-        "as long as the role above has the required privileges.[/dim]\n"
+        f"as long as [cyan]{admin_role}[/cyan] has the required privileges.[/dim]\n"
     )
     database = inquirer.text(
         message="Snowflake database:",
@@ -197,13 +242,95 @@ def cmd_setup(args: argparse.Namespace):
         invalid_message="Schema name must be alphanumeric with underscores, starting with a letter.",
     ).execute().strip()
 
+    # --- Runtime role ---
+    derived_names = sf_names(database, schema)
+    console.print(
+        Panel(
+            "[bold]The runtime role owns the SPCS service at runtime.[/bold]\n\n"
+            "It must already exist and be granted to the admin role above. Create it\n"
+            "before continuing (you only need to do this once per Snowflake account):\n\n"
+            f"  [dim]USE ROLE USERADMIN;[/dim]\n"
+            f"  [dim]CREATE ROLE IF NOT EXISTS SNOWCLAW_RUNTIME_ROLE;[/dim]\n"
+            f"  [dim]GRANT ROLE SNOWCLAW_RUNTIME_ROLE TO ROLE {admin_role};[/dim]\n\n"
+            "SnowClaw will apply the minimal USAGE/READ grants it needs — you don't\n"
+            "have to pre-grant anything else.\n\n"
+            "[dim]Details: https://snowclaw.io/docs/reference/snowflake-privileges[/dim]",
+            title="[bold cyan]Runtime role[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+    runtime_role = inquirer.text(
+        message="Runtime role name:",
+        default="SNOWCLAW_RUNTIME_ROLE",
+        validate=lambda v: len(v.strip()) > 0,
+        invalid_message="Runtime role is required.",
+    ).execute().strip().upper()
+
+    try:
+        exists = role_exists(account.strip(), pat.strip(), runtime_role, admin_role)
+    except requests.HTTPError as e:
+        console.print(f"  [yellow]⚠[/yellow] Could not verify role exists: {e}")
+        exists = True  # optimistic — don't block setup on a transient error
+    if not exists:
+        console.print(
+            f"  [red]✗[/red] Role [cyan]{runtime_role}[/cyan] does not exist. "
+            f"Create it (see panel above), grant it to [cyan]{admin_role}[/cyan], "
+            f"then re-run [cyan]snowclaw setup[/cyan]."
+        )
+        sys.exit(1)
+
+    # --- Runtime-scoped PAT (lives inside the containers) ---
+    console.print()
+    console.print(
+        Panel(
+            "[bold]Mint a runtime-scoped PAT[/bold]\n\n"
+            "The SPCS containers need a Snowflake token at runtime "
+            "(Cortex Code, the Cortex proxy, snowsql all require a PAT — OAuth is rejected).\n"
+            "Run this in Snowsight as a user with grant privileges on "
+            f"[cyan]{sf_user.strip()}[/cyan]:\n\n"
+            f"  [dim]ALTER USER {sf_user.strip()} ADD PROGRAMMATIC ACCESS TOKEN snowclaw_runtime_pat[/dim]\n"
+            f"  [dim]  ROLE_RESTRICTION = '{runtime_role}'[/dim]\n"
+            f"  [dim]  DAYS_TO_EXPIRY = 90;[/dim]\n\n"
+            "Paste the returned token value below. It will be stored as the "
+            f"[cyan]{derived_names['secret_sf_token']}[/cyan] Snowflake secret and bound into both containers.",
+            title="[bold yellow]⚠  Runtime PAT[/bold yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+    runtime_pat = inquirer.secret(
+        message=f"Runtime-scoped PAT (ROLE_RESTRICTION = '{runtime_role}'):",
+    ).execute().strip()
+    if not runtime_pat:
+        console.print("[red]Runtime PAT is required — aborting.[/red]")
+        sys.exit(1)
+
+    # --- Best-effort PAT role-restriction check ---
+    try:
+        restricted, available = validate_pat_role_restriction(
+            account.strip(), pat.strip(), admin_role
+        )
+        if not restricted and available:
+            console.print(
+                f"  [yellow]⚠[/yellow] PAT can assume {len(available)} roles "
+                f"({', '.join(available[:3])}{'...' if len(available) > 3 else ''}). "
+                f"Consider restricting it to [cyan]{admin_role}[/cyan] only."
+            )
+    except Exception:
+        # Non-fatal — the check is advisory
+        pass
+
     settings = {
         "account": account.strip(),
         "sf_user": sf_user.strip(),
         "pat": pat.strip(),
+        "runtime_pat": runtime_pat,
         "channels": channels,
         "warehouse": warehouse.strip(),
-        "role": role.strip(),
+        "role": admin_role,              # legacy alias — written to connections.toml
+        "admin_role": admin_role,
+        "runtime_role": runtime_role,
         "database": database,
         "schema": schema,
         **channel_creds,
@@ -217,10 +344,15 @@ def cmd_setup(args: argparse.Namespace):
         "version": __version__,
         "created": datetime.now(timezone.utc).isoformat(),
         "account": account.strip(),
+        "sf_user": sf_user.strip(),
+        "warehouse": warehouse.strip(),
         "database": database,
         "schema": schema,
         "openclaw_version": "latest",
         "tools": tools,
+        "admin_role": admin_role,
+        "runtime_role": runtime_role,
+        "security_version": 2,
     }
     write_marker(root, marker)
 
@@ -295,19 +427,42 @@ def cmd_setup(args: argparse.Namespace):
     if create_objects:
         console.print()
         try:
-            run_snowflake_setup(settings)
+            created_secret_names = run_snowflake_setup(settings)
             console.print()
             console.print("[green]Snowflake objects created successfully.[/green]")
-        except Exception:
-            console.print("[yellow]Some objects may not have been created. You can retry or create them manually.[/yellow]")
 
-        # Apply approved network rules (or allow-all)
-        if cfg.allow_all_egress or cfg.rules:
+            # Apply approved network rules (or allow-all). The NR/EAI must exist
+            # before we can grant USAGE on the EAI to the runtime role.
+            if cfg.allow_all_egress or cfg.rules:
+                console.print()
+                if not apply_network_rules(
+                    settings["account"], settings["pat"], names, cfg.rules,
+                    allow_all=cfg.allow_all_egress,
+                    admin_role=admin_role,
+                ):
+                    raise RuntimeError("Failed to apply network rules.")
+
+            # Grant minimal USAGE/READ to the runtime role.
             console.print()
-            apply_network_rules(
-                settings["account"], settings["pat"], names, cfg.rules,
-                allow_all=cfg.allow_all_egress,
+            if not apply_runtime_grants(
+                settings["account"], settings["pat"], admin_role, runtime_role,
+                names, created_secret_names,
+            ):
+                raise RuntimeError("Failed to apply runtime-role grants.")
+        except Exception as e:
+            console.print()
+            console.print(
+                Panel(
+                    f"[bold]Snowflake provisioning failed.[/bold]\n\n"
+                    f"{e}\n\n"
+                    "Fix the underlying issue and re-run [cyan]snowclaw setup[/cyan] "
+                    "(use [cyan]--force[/cyan] to overwrite existing template files).",
+                    title="[bold red]✗  Setup aborted[/bold red]",
+                    border_style="red",
+                    expand=False,
+                )
             )
+            sys.exit(1)
 
     # --- Summary ---
     console.print()
@@ -384,20 +539,51 @@ def cmd_build(args: argparse.Namespace):
 
 
 def _update_secrets(root: Path, ctx: dict, names: dict, env: dict) -> None:
-    """Create/update all Snowflake SECRET objects from .env values."""
+    """Create/update Snowflake SECRET objects for enabled channels + tools.
+
+    Secrets are only emitted for channels/tools the user actually enabled at
+    setup time. Creating a placeholder secret for disabled tools would leave
+    orphan empty-string secrets in the schema (and historically caused
+    ``CREATE SERVICE`` to succeed only because the service spec always
+    referenced them).
+
+    The ``sf_token`` secret holds the *runtime-scoped* PAT (from
+    ``SNOWFLAKE_RUNTIME_TOKEN`` in ``.env``, populated by setup / migration).
+    It's bound into both containers so Cortex Code, snowsql, and the Cortex
+    proxy can authenticate. The admin PAT (``SNOWFLAKE_TOKEN`` in ``.env``)
+    stays on the user's laptop and is never uploaded as a Snowflake secret.
+    """
     account = ctx["account"]
     token = ctx["token"]
+    marker = ctx.get("marker") or read_marker(root)
     db = names["db"]
     schema_name = names["schema_name"]
     fqn_schema = names["schema"]
+    prefix = re.sub(r"_db$", "", db.lower())
 
-    secret_map = {
-        names["secret_sf_token"]: token,
-        names["secret_gh_token"]: env.get("GH_TOKEN", ""),
-        names["secret_brave_api_key"]: env.get("BRAVE_API_KEY", ""),
-    }
+    secret_map: dict[str, str] = {}
+    runtime_pat = env.get("SNOWFLAKE_RUNTIME_TOKEN", "").strip()
+    if runtime_pat:
+        secret_map[names["secret_sf_token"]] = runtime_pat
+    else:
+        console.print(
+            "  [yellow]⚠[/yellow] SNOWFLAKE_RUNTIME_TOKEN not set in .env — "
+            "skipping sf_token update. Run `snowclaw setup` or edit .env to set it."
+        )
 
-    # Add channel secrets dynamically from openclaw.json
+    # Tool secrets — only for tools the user enabled.
+    enabled_tools: list[str] = marker.get("tools", []) or []
+    for tool_name in enabled_tools:
+        tool = TOOL_REGISTRY.get(tool_name)
+        if not tool:
+            continue
+        for cred in tool.get("credentials", []):
+            if not cred.get("secret"):
+                continue
+            secret_name = f"{prefix}_{cred['env_var'].lower()}"
+            secret_map[secret_name] = env.get(cred["env_var"], "")
+
+    # Channel secrets — dynamically from openclaw.json's enabled channels.
     config_path = root / "openclaw.json"
     if config_path.exists():
         oc_config = json.loads(config_path.read_text())
@@ -405,14 +591,16 @@ def _update_secrets(root: Path, ctx: dict, names: dict, env: dict) -> None:
             ch for ch, cfg in oc_config.get("channels", {}).items()
             if cfg.get("enabled", False)
         ]
-        prefix = re.sub(r"_db$", "", db.lower())
         for sec in get_channel_secrets(prefix, enabled_channels):
             secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
 
-    # Add remaining env secrets (everything not already handled above)
-    prefix = re.sub(r"_db$", "", db.lower())
+    # Custom env secrets — anything else in .env that isn't a known config var.
     for sec in get_env_secrets(prefix, root / ".env"):
         secret_map[sec["secret_name"]] = env.get(sec["env_var"], "")
+
+    if not secret_map:
+        console.print("  [dim]No secrets to update.[/dim]")
+        return
 
     for secret_name, value in secret_map.items():
         escaped = value.replace("'", "\\'") if value else ""
@@ -429,49 +617,229 @@ def _update_secrets(root: Path, ctx: dict, names: dict, env: dict) -> None:
             raise
 
 
-def _upload_connections_toml(root: Path, ctx: dict, names: dict) -> None:
-    """Upload connections.toml to the SPCS stage."""
-    from snowclaw.stage import get_sf_connection, stage_push_file
+def _resolve_roles(ctx: dict) -> tuple[str, str]:
+    """Resolve (admin_role, runtime_role) for a deployment.
 
-    connections_file = root / "connections.toml"
-    if not connections_file.is_file():
-        console.print("  [dim]Skipping connections.toml (file not found)[/dim]")
-        return
+    Order of precedence:
+      1. Marker fields written by setup/upgrade.
+      2. ``connections.toml`` role (admin fallback) + default
+         ``{prefix}_runtime_role`` (runtime fallback).
+      3. Interactive prompt.
+    """
+    marker = ctx["marker"]
+    names = ctx["names"]
+
+    admin_role = (marker.get("admin_role") or "").strip().upper()
+    if not admin_role:
+        admin_role = (ctx["conn"].get("role") or "").strip().upper()
+    if not admin_role:
+        admin_role = inquirer.text(
+            message="Snowflake admin role:", default="SYSADMIN"
+        ).execute().strip().upper()
+
+    runtime_role = (marker.get("runtime_role") or "").strip().upper()
+    if not runtime_role:
+        runtime_role = names["runtime_role"].upper()
+    return admin_role, runtime_role
+
+
+def _migrate_to_security_v2(
+    root: Path, ctx: dict, admin_role: str, default_runtime_role: str
+) -> str:
+    """Upgrade an existing deployment to the role-separated shape.
+
+    Snowflake blocks ``GRANT OWNERSHIP`` on SPCS services, so we can't
+    transfer ownership of an admin-owned service. Instead we drop the old
+    service and let the normal ``cmd_deploy`` flow recreate it as the
+    runtime role. The stage-mounted volume (skills, workspace, openclaw.json)
+    survives ``DROP SERVICE`` — only the service object and its public
+    endpoint URL change.
+
+    Steps (idempotent):
+      1. Prompt for runtime role name (default = ``{prefix}_runtime_role``).
+      2. Create the role if it doesn't exist, grant it to admin.
+      3. Apply the minimal USAGE/READ grants (including CORTEX_USER).
+      4. Prompt for a runtime-scoped PAT and rotate the ``{prefix}_sf_token``
+         secret value (the secret object itself is kept — its previous value
+         was the admin PAT; new value is the runtime-scoped PAT).
+      5. DROP SERVICE IF EXISTS so it can be recreated as the runtime role.
+      6. Persist ``SNOWFLAKE_RUNTIME_TOKEN`` to ``.env`` so subsequent
+         ``snowclaw deploy`` runs keep the rotated value in the secret.
+
+    Returns the final runtime role name so ``cmd_deploy`` can use it for
+    the subsequent CREATE SERVICE flow.
+    """
+    from snowclaw.snowflake import build_grant_statements
 
     account = ctx["account"]
     token = ctx["token"]
-    sf_user = ctx["user"]
-    warehouse = ctx["warehouse"]
-    db = names["db"]
-    schema_name = names["schema_name"]
+    names = ctx["names"]
     fqn_schema = names["schema"]
+    service_fqn = f"{fqn_schema}.{names['service']}"
 
-    console.print("[bold]Uploading connections.toml to stage...[/bold]")
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        conn = get_sf_connection(
-            account=account,
-            user=sf_user,
-            token=token,
-            warehouse=warehouse,
-            database=db,
-            schema=schema_name,
+    console.print(
+        Panel(
+            "[bold]This will upgrade your deployment to the role-separated security model.[/bold]\n\n"
+            "• A low-privilege runtime role will own the SPCS service. You must have\n"
+            "  already created it and granted it to the admin role (see next prompt).\n"
+            f"• The existing service [cyan]{service_fqn}[/cyan] will be [bold]dropped and recreated[/bold]\n"
+            "  (Snowflake blocks service ownership transfer).\n"
+            "• Your public endpoint URL will change. State on the stage volume\n"
+            "  (skills, workspace files, openclaw.json) is preserved.\n"
+            "• You will be prompted to mint a new [cyan]runtime-scoped PAT[/cyan]\n"
+            "  (the current sf_token holds the admin PAT — we rotate it to a\n"
+            "  role-restricted PAT so a compromised container cannot escalate).\n\n"
+            "[dim]Expect ~1 minute of service downtime.[/dim]",
+            title="[bold yellow]⚠  Security upgrade[/bold yellow]",
+            border_style="yellow",
+            expand=False,
         )
+    )
+    if not inquirer.confirm(message="Proceed with upgrade?", default=True).execute():
+        console.print("[red]Aborted.[/red]")
+        sys.exit(1)
+
+    # --- Runtime role selection ---
+    console.print()
+    console.print(
+        Panel(
+            "[bold]The runtime role must already exist and be granted to the admin role.[/bold]\n\n"
+            "If it doesn't, create it in Snowsight before continuing:\n\n"
+            f"  [dim]USE ROLE USERADMIN;[/dim]\n"
+            f"  [dim]CREATE ROLE IF NOT EXISTS {default_runtime_role};[/dim]\n"
+            f"  [dim]GRANT ROLE {default_runtime_role} TO ROLE {admin_role};[/dim]",
+            title="[bold cyan]Runtime role[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+    runtime_role = inquirer.text(
+        message="Runtime role name:",
+        default=default_runtime_role,
+        validate=lambda v: len(v.strip()) > 0,
+        invalid_message="Runtime role is required.",
+    ).execute().strip().upper()
+
+    try:
+        exists = role_exists(account, token, runtime_role, admin_role)
+    except requests.HTTPError as e:
+        console.print(f"  [yellow]⚠[/yellow] Could not verify role exists: {e}")
+        exists = True
+    if not exists:
+        console.print(
+            f"  [red]✗[/red] Role [cyan]{runtime_role}[/cyan] does not exist. "
+            f"Create it (see panel above), grant it to [cyan]{admin_role}[/cyan], "
+            f"then re-run [cyan]snowclaw deploy[/cyan]."
+        )
+        sys.exit(1)
+
+    # Enumerate existing secrets so runtime role gets READ on each.
+    try:
+        show = snowflake_rest_execute(
+            account, token,
+            f"SHOW SECRETS IN SCHEMA {fqn_schema}",
+            role=admin_role,
+        )
+        existing_secrets = [
+            row[1] for row in (show.get("data") or []) if row and len(row) > 1
+        ]
+    except requests.HTTPError:
+        existing_secrets = []
+
+    console.print()
+    console.print("[bold]Applying runtime-role grants...[/bold]")
+    for stmt in build_grant_statements(names, runtime_role, existing_secrets):
         try:
-            stage_push_file(conn, f"{fqn_schema}.{names['stage']}", str(connections_file), "")
-            console.print(f"  [green]✓[/green] Pushed connections.toml")
+            snowflake_rest_execute(account, token, stmt, role=admin_role)
+            console.print(f"  [green]✓[/green] {stmt[:72]}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] {stmt[:72]}")
+            console.print(f"    [dim]{e}[/dim]")
+            raise
+
+    # --- Rotate sf_token from admin PAT to runtime-scoped PAT ---
+    sf_user = ctx.get("user") or ctx["marker"].get("sf_user", "")
+    console.print()
+    console.print(
+        Panel(
+            "[bold]Mint a runtime-scoped PAT[/bold]\n\n"
+            "The existing [cyan]sf_token[/cyan] secret holds your admin PAT. Rotate it "
+            "to a role-restricted PAT so the container can only act as the runtime role:\n\n"
+            f"  [dim]ALTER USER {sf_user or '<your_user>'} ADD PROGRAMMATIC ACCESS TOKEN snowclaw_runtime_pat[/dim]\n"
+            f"  [dim]  ROLE_RESTRICTION = '{runtime_role}'[/dim]\n"
+            f"  [dim]  DAYS_TO_EXPIRY = 90;[/dim]",
+            title="[bold yellow]⚠  Runtime PAT[/bold yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+    runtime_pat = inquirer.secret(
+        message=f"Runtime-scoped PAT (ROLE_RESTRICTION = '{runtime_role}'):",
+    ).execute().strip()
+    if not runtime_pat:
+        console.print("[red]Runtime PAT is required — aborting.[/red]")
+        sys.exit(1)
+
+    escaped_pat = runtime_pat.replace("'", "\\'")
+    try:
+        snowflake_rest_execute(
+            account, token,
+            f"CREATE OR REPLACE SECRET {fqn_schema}.{names['secret_sf_token']} "
+            f"TYPE = GENERIC_STRING SECRET_STRING = '{escaped_pat}'",
+            role=admin_role,
+        )
+        console.print(f"  [green]✓[/green] ROTATE SECRET {names['secret_sf_token']}")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] Failed to rotate sf_token: {e}")
+        raise
+
+    # Persist to .env so subsequent `snowclaw deploy` runs keep the same value.
+    _persist_runtime_pat_to_env(root, runtime_pat)
+
+    # --- Drop old admin-owned service so it can be recreated as runtime ---
+    try:
+        show_svc = snowflake_rest_execute(
+            account, token,
+            f"SHOW SERVICES LIKE '{names['service']}' IN SCHEMA {fqn_schema}",
+            role=admin_role,
+        )
+        service_exists = bool(show_svc.get("data"))
+    except requests.HTTPError:
+        service_exists = False
+
+    if service_exists:
+        console.print()
+        console.print("[bold]Dropping existing service...[/bold]")
+        try:
+            snowflake_rest_execute(
+                account, token,
+                f"DROP SERVICE IF EXISTS {service_fqn}",
+                role=admin_role,
+            )
+            console.print(f"  [green]✓[/green] DROP SERVICE {service_fqn}")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] DROP SERVICE failed: {e}")
+            raise
+
+    return runtime_role
+
+
+def _persist_runtime_pat_to_env(root: Path, runtime_pat: str) -> None:
+    """Write/update SNOWFLAKE_RUNTIME_TOKEN in the project .env file."""
+    env_path = root / ".env"
+    if not env_path.exists():
+        env_path.write_text(f"SNOWFLAKE_RUNTIME_TOKEN={runtime_pat}\n")
+        return
+    lines = env_path.read_text().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith("SNOWFLAKE_RUNTIME_TOKEN="):
+            lines[i] = f"SNOWFLAKE_RUNTIME_TOKEN={runtime_pat}"
+            found = True
             break
-        except Exception as e:
-            if attempt < max_attempts:
-                delay = 2 ** attempt
-                console.print(f"  [yellow]⚠[/yellow] Attempt {attempt}/{max_attempts} failed: {e}")
-                console.print(f"  Retrying in {delay}s...")
-                time.sleep(delay)
-            else:
-                console.print(f"  [red]✗[/red] Failed to push connections.toml after {max_attempts} attempts: {e}")
-                sys.exit(1)
-        finally:
-            conn.close()
+    if not found:
+        lines.append(f"SNOWFLAKE_RUNTIME_TOKEN={runtime_pat}")
+    env_path.write_text("\n".join(lines) + "\n")
 
 
 def cmd_deploy(args: argparse.Namespace):
@@ -490,6 +858,21 @@ def cmd_deploy(args: argparse.Namespace):
         console.print("[red]Missing required environment variables in .env.[/red]")
         console.print("Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_TOKEN, SNOWFLAKE_USER")
         sys.exit(1)
+
+    admin_role, runtime_role = _resolve_roles(ctx)
+    marker = ctx["marker"]
+    security_version = int(marker.get("security_version", 1))
+    if security_version < 2:
+        runtime_role = _migrate_to_security_v2(root, ctx, admin_role, runtime_role)
+        marker["admin_role"] = admin_role
+        marker["runtime_role"] = runtime_role
+        marker["security_version"] = 2
+        # Backfill fields used by scaffold.py when rendering service.yaml env.
+        if ctx.get("user") and not marker.get("sf_user"):
+            marker["sf_user"] = ctx["user"]
+        if ctx.get("warehouse") and not marker.get("warehouse"):
+            marker["warehouse"] = ctx["warehouse"]
+        write_marker(root, marker)
 
     image_tag = env.get("IMAGE_TAG", "latest")
     db = names["db"]
@@ -648,10 +1031,6 @@ def cmd_deploy(args: argparse.Namespace):
             finally:
                 conn.close()
 
-    # Upload connections.toml to stage
-    console.print()
-    _upload_connections_toml(root, ctx, names)
-
     # Create/alter SPCS service
     console.print()
     console.print("[bold]Creating/updating SPCS service...[/bold]")
@@ -659,6 +1038,40 @@ def cmd_deploy(args: argparse.Namespace):
     service_name = names["service"]
     pool = names["pool"]
     external_access = names["external_access"]
+
+    # Refresh runtime-role grants (including USAGE on any newly-created
+    # secrets from _update_secrets above). Idempotent.
+    try:
+        show_secrets = snowflake_rest_execute(
+            account, token,
+            f"SHOW SECRETS IN SCHEMA {fqn_schema}",
+            role=admin_role,
+        )
+        existing_secrets = [
+            row[1] for row in (show_secrets.get("data") or []) if row and len(row) > 1
+        ]
+    except requests.HTTPError:
+        existing_secrets = []
+    apply_runtime_grants(
+        account, token, admin_role, runtime_role, names, existing_secrets,
+    )
+
+    # Snowflake blocks GRANT OWNERSHIP on an SPCS service, so the only way
+    # for the runtime role to own the service is to create it as that role.
+    # We grant CREATE SERVICE on the schema just long enough for the CREATE,
+    # then revoke it in the finally block below. Subsequent ALTER SERVICE
+    # calls work because runtime holds ownership of the service itself.
+    console.print()
+    console.print("[bold]Creating/updating SPCS service...[/bold]")
+    grant_sql = build_create_service_grant(names, runtime_role)
+    revoke_sql = build_revoke_create_service(names, runtime_role)
+
+    try:
+        snowflake_rest_execute(account, token, grant_sql, role=admin_role)
+        console.print(f"  [green]✓[/green] GRANT CREATE SERVICE → {runtime_role} (transient)")
+    except requests.HTTPError as e:
+        console.print(f"  [red]✗[/red] GRANT CREATE SERVICE failed: {e}")
+        raise
 
     # REST API doesn't support $$ dollar-quoting; use single-quoted string
     escaped_spec = service_spec.replace("'", "''")
@@ -668,34 +1081,45 @@ def cmd_deploy(args: argparse.Namespace):
         f"FROM SPECIFICATION '{escaped_spec}' "
         f"EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
     )
-    try:
-        snowflake_rest_execute(account, token, create_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] CREATE SERVICE")
-    except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
-        raise
-
     alter_spec_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
         f"FROM SPECIFICATION '{escaped_spec}'"
     )
-    try:
-        snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
-    except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
-        raise
-
     alter_eai_sql = (
         f"ALTER SERVICE IF EXISTS {fqn_schema}.{service_name} "
         f"SET EXTERNAL_ACCESS_INTEGRATIONS = ({external_access})"
     )
     try:
-        snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse)
-        console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
-    except requests.HTTPError as e:
-        console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
-        raise
+        try:
+            snowflake_rest_execute(account, token, create_sql, database=db, schema=schema_name, warehouse=warehouse, role=runtime_role)
+            console.print(f"  [green]✓[/green] CREATE SERVICE (as {runtime_role})")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] CREATE SERVICE failed: {e}")
+            raise
+
+        try:
+            snowflake_rest_execute(account, token, alter_spec_sql, database=db, schema=schema_name, warehouse=warehouse, role=runtime_role)
+            console.print(f"  [green]✓[/green] ALTER SERVICE (spec)")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] ALTER SERVICE (spec) failed: {e}")
+            raise
+
+        try:
+            snowflake_rest_execute(account, token, alter_eai_sql, database=db, schema=schema_name, warehouse=warehouse, role=runtime_role)
+            console.print(f"  [green]✓[/green] ALTER SERVICE (external access)")
+        except requests.HTTPError as e:
+            console.print(f"  [red]✗[/red] ALTER SERVICE (external access) failed: {e}")
+            raise
+    finally:
+        # Always revoke — a failed CREATE still leaves the transient grant in place.
+        try:
+            snowflake_rest_execute(account, token, revoke_sql, role=admin_role)
+            console.print(f"  [green]✓[/green] REVOKE CREATE SERVICE → {runtime_role}")
+        except requests.HTTPError as e:
+            console.print(
+                f"  [yellow]⚠[/yellow] Could not revoke CREATE SERVICE from {runtime_role}: {e}. "
+                f"Revoke manually: [dim]{revoke_sql}[/dim]"
+            )
 
     # Show endpoints
     console.print()
@@ -870,13 +1294,10 @@ def cmd_push(args: argparse.Namespace):
         finally:
             conn.close()
 
-    # Always update secrets and upload connections.toml
+    # Always update secrets
     console.print()
     console.print("[bold]Updating Snowflake secrets...[/bold]")
     _update_secrets(root, ctx, names, env)
-
-    console.print()
-    _upload_connections_toml(root, ctx, names)
 
     # Regenerate service spec and alter service to pick up secret changes
     console.print()
@@ -2158,8 +2579,19 @@ def _proxy_setup(args: argparse.Namespace):
             run_proxy_snowflake_setup(settings)
             console.print()
             console.print("[green]Snowflake objects created successfully.[/green]")
-        except Exception:
-            console.print("[yellow]Some objects may not have been created. You can retry or create them manually.[/yellow]")
+        except Exception as e:
+            console.print()
+            console.print(
+                Panel(
+                    f"[bold]Snowflake provisioning failed.[/bold]\n\n"
+                    f"{e}\n\n"
+                    "Fix the underlying issue and re-run [cyan]snowclaw proxy setup[/cyan].",
+                    title="[bold red]✗  Setup aborted[/bold red]",
+                    border_style="red",
+                    expand=False,
+                )
+            )
+            sys.exit(1)
 
     # --- Summary ---
     console.print()

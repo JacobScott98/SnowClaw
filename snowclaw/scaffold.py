@@ -259,6 +259,27 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    # Build tool secrets YAML block from the tools the user enabled at setup.
+    # Tools are stored in the marker (the same place `detect_required_rules`
+    # reads them from). Bindings are only emitted for enabled tools, so a
+    # user who skips GitHub/Brave doesn't end up referencing secrets that
+    # don't exist in the schema.
+    enabled_tools: list[str] = marker.get("tools", []) or []
+    tool_secrets_yaml = ""
+    for tool_name in enabled_tools:
+        tool = TOOL_REGISTRY.get(tool_name)
+        if not tool:
+            continue
+        for cred in tool.get("credentials", []):
+            if not cred.get("secret"):
+                continue
+            secret_name = f"{prefix}_{cred['env_var'].lower()}"
+            tool_secrets_yaml += (
+                f"        - snowflakeSecret: {fqn_schema}.{secret_name}\n"
+                f"          secretKeyRef: secret_string\n"
+                f"          envVarName: {cred['env_var']}\n"
+            )
+
     # Build env secrets YAML block from all qualifying .env vars
     env_file = root / ".env"
     env_secrets = get_env_secrets(prefix, env_file)
@@ -270,9 +291,28 @@ def assemble_build_context(root: Path) -> Path:
             f"          envVarName: {sec['env_var']}\n"
         )
 
+    # Both containers bind sf_token as SNOWFLAKE_TOKEN. The PAT is
+    # role-restricted to the runtime role, so leaking it inside openclaw
+    # only grants runtime-role privileges — no ability to alter network
+    # rules, mint secrets, or create sibling services. Cortex Code /
+    # snowsql / Python connector use it via the connections.toml that the
+    # entrypoint renders at startup.
+    shared_secrets = channel_secrets_yaml + tool_secrets_yaml + env_secrets_yaml
+    sf_token_binding = (
+        f"        - snowflakeSecret: {fqn_schema}.{prefix}_sf_token\n"
+        f"          secretKeyRef: secret_string\n"
+        f"          envVarName: SNOWFLAKE_TOKEN\n"
+    )
+
+    combined_secrets = sf_token_binding + shared_secrets
+    openclaw_block = "      secrets:\n" + combined_secrets.rstrip("\n")
+    proxy_block = "      secrets:\n" + combined_secrets.rstrip("\n")
+
     # Build SNOWCLAW_MASK_VARS from secret credentials that are configured
-    # (reads .env to check which vars actually have values)
-    mask_var_names = ["SNOWFLAKE_TOKEN"]
+    # (reads .env to check which vars actually have values). Always include
+    # SNOWFLAKE_TOKEN — both containers hold the runtime PAT; the masker
+    # ensures it can't leak into LLM request bodies.
+    mask_var_names: list[str] = ["SNOWFLAKE_TOKEN"]
     for registry in (CHANNEL_REGISTRY, TOOL_REGISTRY):
         for entry in registry.values():
             for cred in entry.get("credentials", []):
@@ -295,6 +335,9 @@ def assemble_build_context(root: Path) -> Path:
     mask_vars_value = ",".join(mask_vars_list)
 
     account = marker.get("account", "")
+    sf_user = marker.get("sf_user", "")
+    warehouse_value = marker.get("warehouse", "COMPUTE_WH")
+    runtime_role = (marker.get("runtime_role") or f"{prefix}_runtime_role").upper()
 
     for name in ("service.yaml", "image-repo.sql"):
         src = templates / "spcs" / name
@@ -304,13 +347,14 @@ def assemble_build_context(root: Path) -> Path:
             content = content.replace("__SNOWCLAW_SCHEMA__", schema_name)
             content = content.replace("__SNOWCLAW_PREFIX__", prefix)
             if name == "service.yaml":
-                content = content.replace("__CHANNEL_SECRETS__", channel_secrets_yaml)
-                content = content.replace("__CHANNEL_SECRETS_PROXY__", channel_secrets_yaml)
-                content = content.replace("__ENV_SECRETS__", env_secrets_yaml)
-                content = content.replace("__ENV_SECRETS_PROXY__", env_secrets_yaml)
+                content = content.replace("__OPENCLAW_SECRETS__", openclaw_block)
+                content = content.replace("__PROXY_SECRETS__", proxy_block)
                 content = content.replace("__SNOWCLAW_MASK_VARS__", mask_vars_value)
                 content = content.replace("__PROXY_LOG_RESPONSES__", env_values.get("PROXY_LOG_RESPONSES", ""))
                 content = content.replace("__SNOWCLAW_ACCOUNT__", account)
+                content = content.replace("__SNOWCLAW_USER__", sf_user)
+                content = content.replace("__SNOWCLAW_WAREHOUSE__", warehouse_value)
+                content = content.replace("__SNOWCLAW_RUNTIME_ROLE__", runtime_role)
             (spcs_dir / name).write_text(content)
 
     # Generate network-rules.sql from saved rules
