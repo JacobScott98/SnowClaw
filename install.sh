@@ -12,6 +12,48 @@ err()   { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # --- Check git ---
 command -v git &>/dev/null || err "git is required but not found."
 
+# --- Check Docker container runtime ---
+# SnowClaw uses `docker compose` for `snowclaw dev` and image builds for deploy,
+# so a working Docker daemon is required up front. On macOS we recommend OrbStack;
+# Linux users typically have Docker Engine installed directly.
+if ! command -v docker &>/dev/null; then
+    OS="$(uname -s)"
+    echo "" >&2
+    printf '\033[1;31merror:\033[0m Docker is required but no `docker` CLI was found.\n' >&2
+    echo "" >&2
+    echo "SnowClaw needs a running Docker container runtime to build and run images." >&2
+    echo "Install one of the following, then re-run this installer:" >&2
+    echo "" >&2
+    if [ "$OS" = "Darwin" ]; then
+        echo "  OrbStack (recommended on macOS):" >&2
+        echo "    brew install --cask orbstack" >&2
+        echo "" >&2
+        echo "  Alternatives:" >&2
+        echo "    brew install --cask docker        # Docker Desktop" >&2
+        echo "    brew install colima docker        # Colima + docker CLI" >&2
+    else
+        echo "  Docker Engine (Linux):" >&2
+        echo "    https://docs.docker.com/engine/install/" >&2
+        echo "" >&2
+        echo "  Or Docker Desktop for Linux:" >&2
+        echo "    https://docs.docker.com/desktop/install/linux-install/" >&2
+    fi
+    exit 1
+fi
+
+if ! docker info &>/dev/null; then
+    echo "" >&2
+    printf '\033[1;31merror:\033[0m The `docker` CLI is installed but the Docker daemon is not responding.\n' >&2
+    echo "" >&2
+    echo "Start your container runtime (e.g. OrbStack, Docker Desktop, or Colima) and re-run this installer." >&2
+    echo "  OrbStack:        open -a OrbStack" >&2
+    echo "  Docker Desktop:  open -a Docker" >&2
+    echo "  Colima:          colima start" >&2
+    exit 1
+fi
+
+info "Found Docker runtime ($(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'version unknown'))"
+
 # --- Check Python ---
 if command -v python3 &>/dev/null; then
     PY=python3
