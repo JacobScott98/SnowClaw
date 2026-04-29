@@ -2328,36 +2328,88 @@ def cmd_logs(args: argparse.Namespace):
     num_lines = getattr(args, "lines", 100)
     container = "cortex-proxy" if getattr(args, "proxy", False) else getattr(args, "container", "openclaw")
     instance_id = getattr(args, "instance", "0")
+    follow = getattr(args, "tail", False)
+    interval = max(0.5, float(getattr(args, "interval", 2.0)))
 
     fqn_service = f"{fqn_schema}.{service_name}"
-    sql = (
-        f"CALL SYSTEM$GET_SERVICE_LOGS("
-        f"'{fqn_service}', '{instance_id}', '{container}', {num_lines})"
-    )
 
-    console.print(
-        f"[bold]Fetching logs:[/bold] {service_name} "
-        f"[dim](container={container}, instance={instance_id}, lines={num_lines})[/dim]"
-    )
-    console.print()
-
-    try:
+    def _fetch(lines: int) -> str:
+        sql = (
+            f"CALL SYSTEM$GET_SERVICE_LOGS("
+            f"'{fqn_service}', '{instance_id}', '{container}', {lines})"
+        )
         data = snowflake_rest_execute(
             account, token, sql,
             database=db, schema=schema_name, warehouse=warehouse,
         )
         rows = data.get("data", [])
-        if rows and rows[0]:
-            log_text = rows[0][0]
+        if rows and rows[0] and rows[0][0]:
+            return rows[0][0]
+        return ""
+
+    header_extra = f", follow=True, interval={interval}s" if follow else ""
+    console.print(
+        f"[bold]Fetching logs:[/bold] {service_name} "
+        f"[dim](container={container}, instance={instance_id}, lines={num_lines}{header_extra})[/dim]"
+    )
+    console.print()
+
+    if not follow:
+        try:
+            log_text = _fetch(num_lines)
             if log_text:
                 console.print(log_text)
             else:
                 console.print("[dim]No log output returned.[/dim]")
-        else:
-            console.print("[dim]No log output returned.[/dim]")
-    except requests.HTTPError as e:
-        console.print(f"[red]Failed to fetch logs:[/red] {e}")
-        sys.exit(1)
+        except requests.HTTPError as e:
+            console.print(f"[red]Failed to fetch logs:[/red] {e}")
+            sys.exit(1)
+        return
+
+    # Follow mode: poll SYSTEM$GET_SERVICE_LOGS, dedupe against the last printed
+    # line. Snowflake returns the most recent N lines per call, so if log volume
+    # exceeds `poll_lines` per `interval` we'll miss output — bump --lines or
+    # shrink --interval if that warning fires.
+    poll_lines = max(num_lines, 200)
+    last_line: str | None = None
+    console.print("[dim]Tailing logs (Ctrl+C to stop)...[/dim]")
+    try:
+        while True:
+            try:
+                log_text = _fetch(poll_lines)
+            except requests.HTTPError as e:
+                console.print(f"[yellow]Transient fetch error:[/yellow] {e}")
+                time.sleep(interval)
+                continue
+
+            if log_text:
+                lines = log_text.splitlines()
+                if last_line is None:
+                    new_lines = lines[-num_lines:]
+                else:
+                    idx = None
+                    for i in range(len(lines) - 1, -1, -1):
+                        if lines[i] == last_line:
+                            idx = i
+                            break
+                    if idx is None:
+                        console.print(
+                            "[yellow]Log buffer rolled past last seen line; "
+                            "some lines may have been missed. "
+                            "Consider raising --lines or lowering --interval.[/yellow]"
+                        )
+                        new_lines = lines
+                    else:
+                        new_lines = lines[idx + 1:]
+                for line in new_lines:
+                    console.print(line)
+                if new_lines:
+                    last_line = new_lines[-1]
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print()
+        console.print("[dim]Stopped tailing.[/dim]")
 
 
 def cmd_upgrade(args: argparse.Namespace):

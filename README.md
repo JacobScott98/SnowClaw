@@ -241,7 +241,7 @@ Variables listed in `SNOWCLAW_MASK_VARS` (a comma-separated list in `.env`) are 
 | `snowclaw suspend` | Suspend the SPCS service and compute pool |
 | `snowclaw resume` | Resume the SPCS compute pool and service |
 | `snowclaw restart` | Restart the service to pick up config changes |
-| `snowclaw logs` | Show container logs from the SPCS service |
+| `snowclaw logs` | Show container logs from the SPCS service (add `-f`/`--tail` to follow) |
 | `snowclaw update` | Update the OpenClaw base image version |
 | `snowclaw push` | Push skills and openclaw.json (and secrets) to SPCS stage |
 | `snowclaw push --secrets` | Update only Snowflake secrets and connections.toml (skip file sync) |
