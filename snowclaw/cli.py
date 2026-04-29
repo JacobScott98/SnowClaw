@@ -56,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("-p", "--proxy", action="store_true", help="Show proxy container logs instead of openclaw")
     logs_parser.add_argument("--container", default="openclaw", help="Container name (default: openclaw)")
     logs_parser.add_argument("--instance", default="0", help="Instance ID (default: 0)")
+    logs_parser.add_argument("-f", "--tail", action="store_true", help="Follow the logs (poll for new lines until Ctrl+C)")
+    logs_parser.add_argument("--interval", type=float, default=2.0, help="Poll interval in seconds when --tail is set (default: 2.0)")
 
     pull_parser = sub.add_parser(
         "pull",
