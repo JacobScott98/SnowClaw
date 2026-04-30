@@ -58,6 +58,7 @@ from snowclaw.utils import (
     find_project_root,
     get_templates_dir,
     load_snowflake_context,
+    normalize_openclaw_version,
     read_marker,
     render_banner,
     sf_names,
@@ -65,6 +66,64 @@ from snowclaw.utils import (
     snowflake_rest_execute,
     write_marker,
 )
+
+
+OPENCLAW_RECOMMENDED_VERSION = "2026.4.15"
+
+
+def _prompt_openclaw_version(current: str | None = None) -> str:
+    """Render the warning panel and run the version select widget.
+
+    Returns the canonical version string (``latest`` or ``YYYY.M.DD``).
+    Used by both ``cmd_setup`` and ``cmd_update`` so the UX stays consistent.
+    """
+    console.print(
+        Panel(
+            f"[bold]The Docker image is pulled from "
+            f"[cyan]ghcr.io/openclaw/openclaw:<version>[/cyan].[/bold]\n\n"
+            f"[cyan]{OPENCLAW_RECOMMENDED_VERSION}[/cyan] is the version pinned and "
+            "tested against this CLI release — pick it for stability.\n"
+            "[cyan]latest[/cyan] tracks upstream and may break unexpectedly between deploys.\n"
+            "Pick [cyan]custom[/cyan] only when the upstream team has told you to pin a specific newer build.",
+            title="[bold yellow]⚠  OpenClaw version[/bold yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+    def _validate(value: str) -> bool:
+        try:
+            normalize_openclaw_version(value)
+            return True
+        except ValueError:
+            return False
+
+    choice = inquirer.select(
+        message="OpenClaw image version:",
+        choices=[
+            {
+                "name": f"{OPENCLAW_RECOMMENDED_VERSION} (Recommended — tested with this CLI release)",
+                "value": OPENCLAW_RECOMMENDED_VERSION,
+            },
+            {
+                "name": "latest (tracks upstream — may break between deploys)",
+                "value": "latest",
+            },
+            {"name": "custom (enter your own version)", "value": "custom"},
+        ],
+    ).execute()
+
+    if choice == "custom":
+        default_text = current if current and current not in (OPENCLAW_RECOMMENDED_VERSION, "latest") else ""
+        raw = inquirer.text(
+            message="Custom OpenClaw version (e.g. 2026.4.15):",
+            default=default_text,
+            validate=_validate,
+            invalid_message="Use 'latest' or CalVer like 2026.4.15 (a leading 'v' is allowed).",
+        ).execute()
+        return normalize_openclaw_version(raw)
+
+    return choice
 
 
 def cmd_setup(args: argparse.Namespace):
@@ -222,6 +281,10 @@ def cmd_setup(args: argparse.Namespace):
         ],
     ).execute()
 
+    # --- OpenClaw image version ---
+    console.print()
+    openclaw_version = _prompt_openclaw_version()
+
     warehouse = inquirer.text(message="Snowflake warehouse:", default="COMPUTE_WH").execute()
 
     console.print(
@@ -348,7 +411,7 @@ def cmd_setup(args: argparse.Namespace):
         "warehouse": warehouse.strip(),
         "database": database,
         "schema": schema,
-        "openclaw_version": "latest",
+        "openclaw_version": openclaw_version,
         "tools": tools,
         "admin_role": admin_role,
         "runtime_role": runtime_role,
@@ -1146,12 +1209,9 @@ def cmd_update(args: argparse.Namespace):
 
     current = marker.get("openclaw_version", "latest")
     console.print(f"Current OpenClaw version: [cyan]{current}[/cyan]")
+    console.print()
 
-    new_version = inquirer.text(
-        message="New OpenClaw version (or 'latest'):",
-        default="latest",
-        validate=lambda v: len(v.strip()) > 0,
-    ).execute().strip()
+    new_version = _prompt_openclaw_version(current)
 
     if new_version == current:
         console.print("[dim]Version unchanged, nothing to do.[/dim]")
