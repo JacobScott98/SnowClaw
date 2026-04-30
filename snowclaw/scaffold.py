@@ -18,7 +18,14 @@ from snowclaw.network import (
     load_network_config,
     load_network_rules,
 )
-from snowclaw.utils import console, get_templates_dir, read_marker, sf_names, sf_proxy_names
+from snowclaw.utils import (
+    console,
+    get_templates_dir,
+    normalize_openclaw_version,
+    read_marker,
+    sf_names,
+    sf_proxy_names,
+)
 
 
 DOCKER_COMPOSE_TEMPLATE = """\
@@ -119,7 +126,13 @@ def assemble_build_context(root: Path) -> Path:
     database = marker.get("database", "snowclaw_db")
     schema_name = marker.get("schema", "snowclaw_schema")
     prefix = re.sub(r"_db$", "", database.lower())
-    openclaw_version = marker.get("openclaw_version", "latest")
+    raw_version = marker.get("openclaw_version", "latest")
+    try:
+        openclaw_version = normalize_openclaw_version(raw_version)
+    except ValueError as e:
+        console.print(f"[red]Invalid openclaw_version in .snowclaw/config.json: {e}[/red]")
+        console.print("[dim]Run [cyan]snowclaw update[/cyan] to fix it.[/dim]")
+        sys.exit(1)
     templates = get_templates_dir()
 
     # Auto-migrate pre-existing openclaw.json. Each migration is idempotent.

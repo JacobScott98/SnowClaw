@@ -210,3 +210,30 @@ def render_banner():
     banner = Text.assemble(title, "\n", subtitle)
     console.print(Panel(banner, expand=False, border_style="cyan"))
     console.print()
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw version
+# ---------------------------------------------------------------------------
+
+_OPENCLAW_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}$")
+
+
+def normalize_openclaw_version(version: str) -> str:
+    """Strip a stray leading ``v``/``V`` and validate against CalVer or ``latest``.
+
+    Returns the canonical form (``latest`` or ``YYYY.M.DD``). Raises
+    ``ValueError`` on empty input or any other shape so callers can surface a
+    user-friendly error.
+    """
+    stripped = (version or "").strip()
+    if not stripped:
+        raise ValueError("OpenClaw version cannot be empty.")
+    if stripped == "latest":
+        return "latest"
+    candidate = stripped[1:] if stripped[:1] in ("v", "V") else stripped
+    if _OPENCLAW_VERSION_RE.match(candidate):
+        return candidate
+    raise ValueError(
+        f"Invalid OpenClaw version {stripped!r}. Expected 'latest' or CalVer like 2026.4.15."
+    )
